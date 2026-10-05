@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "UM_Hub") (type "KiCad") (uri "${KIPRJMOD}/UM_Hub.pretty") (options "") (descr "Project-local footprints with project-relative 3D models"))
+)

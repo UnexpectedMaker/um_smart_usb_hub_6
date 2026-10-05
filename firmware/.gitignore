@@ -1,0 +1,6 @@
+# PlatformIO build output and downloaded libraries
+.pio/
+
+# Editor / OS files
+.vscode/
+.DS_Store

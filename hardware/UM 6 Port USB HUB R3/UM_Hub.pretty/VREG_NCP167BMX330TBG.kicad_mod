@@ -1,0 +1,320 @@
+(footprint "VREG_NCP170AMX300TCG"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at -0.752987 -0.803087 180)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "21c52a07-53b5-4bca-b28a-27507d4d87f9")
+		(effects
+			(font
+				(size 0.281531 0.281531)
+				(thickness 0.024481)
+			)
+			(justify right top)
+		)
+	)
+	(property "Value" "VREG_NCP170AMX300TCG"
+		(at -0.752859 1.10434 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "067fa9a8-55d6-4f28-b7f4-c561972af91f")
+		(effects
+			(font
+				(size 0.281485 0.281485)
+				(thickness 0.024477)
+			)
+			(justify right top)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "09477a49-74cd-4896-ab21-ed85b00640a5")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "3V3 700mA Regulator "
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "ddcfdc96-3170-4e84-a93b-4ea01e4f9578")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_poly
+		(pts
+			(xy -0.236746 -0.344895) (xy -0.385295 -0.196346) (xy -0.649454 -0.196346) (xy -0.649454 -0.453654)
+			(xy -0.236746 -0.453654)
+		)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Mask")
+		(uuid "9b847456-2e9e-46bc-8154-611ee92c1421")
+	)
+	(fp_poly
+		(pts
+			(xy -0.236746 0.344895) (xy -0.236746 0.453654) (xy -0.649454 0.453654) (xy -0.649454 0.196346) (xy -0.385295 0.196346)
+		)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Mask")
+		(uuid "653891ea-0d30-4597-898f-5b6a4015c36a")
+	)
+	(fp_poly
+		(pts
+			(xy 0.649454 -0.196346) (xy 0.385295 -0.196346) (xy 0.236746 -0.344895) (xy 0.236746 -0.453654) (xy 0.649454 -0.453654)
+		)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Mask")
+		(uuid "3fbe2042-a66f-4154-9d69-393d9529fa96")
+	)
+	(fp_poly
+		(pts
+			(xy 0.649454 0.453654) (xy 0.236746 0.453654) (xy 0.236746 0.344895) (xy 0.385295 0.196346) (xy 0.649454 0.196346)
+		)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Mask")
+		(uuid "9990d3af-551b-4195-bd8d-ce25e87fddde")
+	)
+	(fp_line
+		(start -0.77 -0.47)
+		(end -0.77 -0.21)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "79cc2dea-22ef-4ba0-8638-0e939b7b0887")
+	)
+	(fp_poly
+		(pts
+			(xy -0.614645 -0.195947) (xy -0.614645 -0.430001) (xy -0.36 -0.429999) (xy -0.360001 -0.195947)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "54448ac8-16a5-4f9a-8b52-64d040c8b7e4")
+	)
+	(fp_poly
+		(pts
+			(xy -0.614645 0.434053) (xy -0.614645 0.199999) (xy -0.36 0.2) (xy -0.360001 0.434053)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "ba0d81ad-2493-496e-9d8f-c7e7182fa8d0")
+	)
+	(fp_poly
+		(pts
+			(xy -0.200978 -0.00157) (xy -0.000122 -0.202426) (xy 0.201152 -0.001151) (xy 0.000296 0.199704)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "ea492fb4-85c3-4478-8e0e-dffd01f7e8ba")
+	)
+	(fp_poly
+		(pts
+			(xy 0.355354 -0.195947) (xy 0.355355 -0.430002) (xy 0.61 -0.43) (xy 0.609999 -0.195947)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "6110a032-f939-4068-83a0-17e88dadcd9f")
+	)
+	(fp_poly
+		(pts
+			(xy 0.355355 0.434053) (xy 0.355355 0.199999) (xy 0.61 0.199999) (xy 0.609999 0.434053)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "aea7ebd2-cfc6-4e40-8baf-084fed73d61a")
+	)
+	(fp_line
+		(start -0.5 -0.5)
+		(end 0.5 -0.5)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "53f7667a-6289-419e-89a1-98903d55a7f6")
+	)
+	(fp_line
+		(start -0.5 0.5)
+		(end -0.5 -0.5)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "195be0bf-dda9-475e-a8b6-4bf5443a3b3f")
+	)
+	(fp_line
+		(start 0.5 -0.5)
+		(end 0.5 0.5)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "2428ac2c-2d2a-4676-bb22-50b5e917ca54")
+	)
+	(fp_line
+		(start 0.5 0.5)
+		(end -0.5 0.5)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "9101de86-4341-4a7d-8483-d8d60afef4b1")
+	)
+	(pad "1" smd custom
+		(at -0.45 -0.3 270)
+		(size 0.1524 0.1524)
+		(layers "F.Cu")
+		(solder_mask_margin 0.0254)
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts
+					(xy 0.105254 -0.064705) (xy 0.105254 0.201054) (xy -0.155254 0.201054) (xy -0.155254 -0.214854)
+					(xy -0.044895 -0.214854)
+				)
+				(width 0)
+				(fill yes)
+			)
+		)
+		(uuid "5e1311ce-4a16-48a7-8cae-b782c13ed815")
+	)
+	(pad "2" smd custom
+		(at -0.45 0.3 270)
+		(size 0.1524 0.1524)
+		(layers "F.Cu")
+		(solder_mask_margin 0.0254)
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts
+					(xy 0.155254 0.201054) (xy -0.105254 0.201054) (xy -0.105254 -0.064705) (xy 0.044895 -0.214854)
+					(xy 0.155254 -0.214854)
+				)
+				(width 0)
+				(fill yes)
+			)
+		)
+		(uuid "e7b9c97e-5ace-451d-b078-1a6851202921")
+	)
+	(pad "3" smd custom
+		(at 0.45 0.3 270)
+		(size 0.1524 0.1524)
+		(layers "F.Cu")
+		(solder_mask_margin 0.0254)
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts
+					(xy 0.155254 0.214854) (xy 0.044895 0.214854) (xy -0.105254 0.064705) (xy -0.105254 -0.201054)
+					(xy 0.155254 -0.201054)
+				)
+				(width 0)
+				(fill yes)
+			)
+		)
+		(uuid "ede4f927-e73b-4b7b-a627-6c498b51e51e")
+	)
+	(pad "4" smd custom
+		(at 0.45 -0.3 270)
+		(size 0.1524 0.1524)
+		(layers "F.Cu")
+		(solder_mask_margin 0.0254)
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts
+					(xy 0.105254 0.064705) (xy -0.044895 0.214854) (xy -0.155254 0.214854) (xy -0.155254 -0.201054)
+					(xy 0.105254 -0.201054)
+				)
+				(width 0)
+				(fill yes)
+			)
+		)
+		(uuid "c7795611-680d-49b2-8817-7382733a1b44")
+	)
+	(pad "5" smd roundrect
+		(at 0 0 135)
+		(size 0.4 0.4)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.1)
+		(solder_mask_margin 0.0254)
+		(uuid "2e446a88-8990-4ec9-97a4-69b596a3e0f3")
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/3d models/NCP170AMX170TCG.STEP"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -90 0 90)
+		)
+	)
+)

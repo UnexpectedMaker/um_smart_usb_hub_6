@@ -1,0 +1,13 @@
+# KiCad per-user editor state (layer visibility, open panels)
+*.kicad_prl
+
+# KiCad backups, autosaves, locks and caches
+*-backups/
+_autosave-*
+*.lck
+~*.lck
+fp-info-cache
+*.bak
+*-bak
+*.kicad_pcb-bak
+*.sch-bak

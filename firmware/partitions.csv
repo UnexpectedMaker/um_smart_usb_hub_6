@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Unexpected Maker
+#
+# Flash layout (16 MB): two 2 MB app slots so OTA updates can swap between
+# them, and ~1.9 MB of LittleFS for /settings.json.
+# Name,    Type,  SubType,  Offset,    Size
+nvs,       data,  nvs,      0x9000,    0x5000
+otadata,   data,  ota,      0xe000,    0x2000
+app0,      app,   ota_0,    0x10000,   0x200000
+app1,      app,   ota_1,    0x210000,  0x200000
+spiffs,    data,  spiffs,   0x410000,  0x1F0000

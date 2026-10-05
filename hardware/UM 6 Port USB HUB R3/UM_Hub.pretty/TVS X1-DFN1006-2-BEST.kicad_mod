@@ -1,0 +1,221 @@
+(footprint "TVS X1-DFN1006-2-BEST"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "DFN package size 1006 3 pins")
+	(tags "DFN package size 1006 3 pins")
+	(property "Reference" "REF**"
+		(at 0 -1.6 0)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "baffc57f-9ce5-4f65-a9bf-27e4eb10655a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "TVS X1-DFN1006-2-BEST"
+		(at 0 1.6 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "cfc81eb7-408f-4797-9b77-e6a9aa442f69")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b8f5b0da-9c5b-44c9-9d26-8918b83383ee")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "Bidirectional transient-voltage-suppression diode, small symbol"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "eb19a484-cdf6-4267-864a-eafb8942e4a8")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property ki_fp_filters "TO-???* *_Diode_* *SingleDiode* D_*")
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -0.7 -0.5)
+		(end -0.7 0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "63492f70-8d89-47b9-b938-472166c421c7")
+	)
+	(fp_line
+		(start -0.2 -0.5)
+		(end -0.7 -0.5)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "fa7ea89f-41be-4f4c-a5a7-899790d6a2a7")
+	)
+	(fp_poly
+		(pts
+			(xy -0.45 -0.18) (xy -0.25 -0.18) (xy -0.25 0.18) (xy -0.45 0.18)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "799b6982-0c49-409a-b59f-b305402a1183")
+	)
+	(fp_poly
+		(pts
+			(xy 0.25 -0.18) (xy 0.45 -0.18) (xy 0.45 0.18) (xy 0.25 0.18)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Paste")
+		(uuid "88757bd0-3835-402d-b736-6f1e192b0685")
+	)
+	(fp_line
+		(start -0.799999 -0.6)
+		(end 0.799999 -0.6)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "0d7695c7-adf5-440a-95ca-1affd9d284c0")
+	)
+	(fp_line
+		(start -0.799999 0.6)
+		(end -0.799999 -0.6)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "a1a88e22-cf2d-4971-ab8f-2529fdff9b53")
+	)
+	(fp_line
+		(start 0.799999 -0.6)
+		(end 0.799999 0.6)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "4fa45781-1dbf-4528-aecd-290839267a98")
+	)
+	(fp_line
+		(start 0.799999 0.6)
+		(end -0.799999 0.6)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "93164a6e-4ef9-45de-abe2-81858d180765")
+	)
+	(fp_line
+		(start -0.499999 0.3)
+		(end -0.499999 -0.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "5037e8b9-8db6-449b-89d8-3f85bca2133f")
+	)
+	(fp_line
+		(start -0.349999 -0.3)
+		(end -0.499999 -0.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "68295c9a-450d-4477-8572-0c6a07321bf5")
+	)
+	(fp_line
+		(start -0.349999 -0.3)
+		(end 0.499999 -0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "515580e0-aa8a-47d0-bd12-079293db657d")
+	)
+	(fp_line
+		(start 0.499999 -0.3)
+		(end 0.499999 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "0a9e767a-2c89-4686-896c-6740feae9cc1")
+	)
+	(fp_line
+		(start 0.499999 0.3)
+		(end -0.499999 0.3)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "da08423c-8cb3-435e-b5e4-2af8b3d7ea56")
+	)
+	(pad "1" smd roundrect
+		(at -0.349999 0 270)
+		(size 0.6 0.4)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.15)
+		(uuid "c589e224-5a27-45a2-adb8-fc599496b392")
+	)
+	(pad "2" smd roundrect
+		(at 0.349999 0 270)
+		(size 0.6 0.4)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.15)
+		(uuid "8b45aa81-ba2a-4844-9c14-c768de2cf762")
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/3d models/TVS_DFN1006.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -90 0 0)
+		)
+	)
+)
