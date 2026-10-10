@@ -680,6 +680,7 @@ String buildStatusJson()
         j += ",\"occupied\":" + String(jb(port.isOccupied()));
         j += ",\"fault\":" + String(jb(port.hasFault()));
         j += ",\"state\":\"" + String(portStateStr(port)) + "\"";
+        j += ",\"name\":\"" + jsonEsc(g_ports.config().names[i]) + "\"";
         j += ",\"mon\":" + String(jb(r.ok));
         j += ",\"v\":" + String(r.volts, 2);
         j += ",\"ma\":" + String(r.ma, 1);
@@ -937,6 +938,10 @@ void startNetServices()
         [](int n, bool on) {
             if (n >= 1 && n <= NUM_PORTS)
                 ports[n - 1].setEnabled(on);
+        },
+        [](int n, const String &name) {
+            if (n >= 1 && n <= NUM_PORTS)
+                g_ports.setName(n - 1, name);
         },
         []() { return g_schedules.toJsonString(); },
         [](const String &body) {

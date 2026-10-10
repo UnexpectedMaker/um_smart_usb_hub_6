@@ -77,6 +77,7 @@ static bool collectBody(AsyncWebServerRequest *req, uint8_t *data, size_t len, s
 }
 
 void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
+                         PortNameFn portNameFn,
                          SchedGetFn schedGetFn, SchedSetFn schedSetFn, SaveFn saveFn)
 {
     if (_started)
@@ -107,6 +108,32 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
             themeFn(req->getParam("value")->value());
         req->send(200, "application/json", "{\"ok\":true}");
     });
+
+    // POST /api/port/name?n=1..6 with {"name":"..."} — rename one port and
+    // persist it. Empty name restores the default "Port" label.
+    server.on(
+        "/api/port/name", HTTP_POST,
+        [statusFn](AsyncWebServerRequest *req) { req->send(200, "application/json", statusFn()); },
+        nullptr,
+        [portNameFn, saveFn](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+            String body;
+            if (!collectBody(req, data, len, index, total, body))
+                return;
+            if (!req->hasParam("n"))
+                return;
+            try
+            {
+                nlohmann::json j = nlohmann::json::parse(body.c_str());
+                String name;
+                if (j.is_object() && j.contains("name"))
+                    from_json(j["name"], name);
+                portNameFn(req->getParam("n")->value().toInt(), name);
+                saveFn();
+            }
+            catch (...)
+            {
+            }
+        });
 
     // POST /api/port?n=1..6&on=0|1 — switch one port. Replies with the status
     // read back afterwards, so the page shows what really happened.
