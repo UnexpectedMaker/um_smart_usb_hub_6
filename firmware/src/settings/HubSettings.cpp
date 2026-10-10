@@ -318,6 +318,54 @@ std::vector<HubSettingField> LedsSettings::uiSchema()
 }
 
 // ===========================================================================
+// ports
+// ===========================================================================
+
+void PortsSettings::fromJson(const nlohmann::json &j)
+{
+    if (!j.is_object())
+        return;
+    try
+    {
+        if (j.contains("power_on_boot") && j["power_on_boot"].is_array())
+        {
+            const auto &a = j["power_on_boot"];
+            for (uint8_t i = 0; i < HUB_NUM_PORTS && i < a.size(); i++)
+                if (a[i].is_boolean())
+                    _config.power_on_boot[i] = a[i].get<bool>();
+        }
+        if (j.contains("names") && j["names"].is_array())
+        {
+            const auto &a = j["names"];
+            for (uint8_t i = 0; i < HUB_NUM_PORTS && i < a.size(); i++)
+            {
+                String s;
+                from_json(a[i], s);
+                setName(i, s);
+            }
+        }
+    }
+    catch (...)
+    {
+    }
+}
+
+void PortsSettings::setName(uint8_t port, const String &name)
+{
+    if (port >= HUB_NUM_PORTS)
+        return;
+    String cleaned;
+    cleaned.reserve(min((unsigned)name.length(), 24u));
+    for (char c : name)
+    {
+        if ((uint8_t)c >= 0x20 && cleaned.length() < 24)
+            cleaned += c;
+    }
+    cleaned.trim();
+    _config.names[port] = cleaned;
+}
+
+// ===========================================================================
 // website
 // ===========================================================================
 

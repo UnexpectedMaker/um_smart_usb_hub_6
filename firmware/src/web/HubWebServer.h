@@ -21,6 +21,7 @@ public:
     using StatusFn = std::function<String()>;              // GET /api/status body
     using ThemeFn = std::function<void(const String &)>;   // store "dark" | "light"
     using PortFn = std::function<void(int, bool)>;         // switch port n (1..6)
+    using PortNameFn = std::function<void(int, const String &)>; // rename port n (1..6)
     using SchedGetFn = std::function<String()>;            // GET /api/schedules body
     using SchedSetFn = std::function<void(const String &)>; // store schedules from a JSON body
     using SaveFn = std::function<void()>;                  // save all settings to flash
@@ -41,7 +42,7 @@ public:
     // Register every route and start listening. Call once the network is up;
     // later calls do nothing.
     void begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
-               SchedGetFn schedGetFn, SchedSetFn schedSetFn, SaveFn saveFn);
+               PortNameFn portNameFn, SchedGetFn schedGetFn, SchedSetFn schedSetFn, SaveFn saveFn);
 
 private:
     void registerRest();

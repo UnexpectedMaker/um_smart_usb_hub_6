@@ -206,7 +206,13 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .socket.selected { border-color:var(--accent); }
 .sock-head { width:100%; display:flex; align-items:center; justify-content:space-between; gap:.3rem; }
 .sock-num { font-size:1.5rem; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
-.sock-state { font-size:.68rem; font-weight:600; color:var(--text-muted); text-align:right; line-height:1.2; }
+.sock-name { min-width:0; width:6.5rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  border:0; background:transparent; padding:.05rem .1rem; color:var(--text-muted);
+  font-size:.74rem; font-weight:700; text-align:right; line-height:1.2; border-radius:4px; }
+.sock-name::placeholder { color:var(--text-muted); opacity:1; }
+.sock-name:hover, .sock-name:focus { color:var(--text); background:var(--surface-2); outline:none; }
+.sock-name.named { color:var(--text); text-shadow:0 0 .45rem var(--name-glow), 0 0 .9rem var(--name-glow); }
+.sock-state { font-size:.68rem; font-weight:600; color:var(--text-muted); text-align:center; line-height:1.2; min-height:.85rem; }
 
 /* The USB-C opening, filled with whatever that port's RGB LED is showing — it
    mirrors the hardware LED. Static states are set here; pulse and flash are
@@ -216,6 +222,10 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .st-blue  .slot { background:var(--led-blue); }
 .st-green .slot { background:var(--led-green); }
 .st-pink  .slot { background:var(--led-pink); }
+.st-blue, .st-pulse { --name-glow:var(--led-blue); }
+.st-green { --name-glow:var(--led-green); }
+.st-fault { --name-glow:var(--led-red); }
+.st-pink, .st-pinkpulse { --name-glow:var(--led-pink); }
 /* Waiting for a power change to come back from the hub. */
 .st-wait  .slot { background:repeating-linear-gradient(45deg, var(--slot-off) 0 4px, var(--border) 4px 8px); }
 
@@ -442,6 +452,12 @@ let selectedPort = null;
 const schedules = {};
 const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
+function portTitle(n) {
+  const p = lastPorts.find((x) => x.n === n) || {};
+  const name = (p.name || '').trim();
+  return name ? name + ' · Port ' + n : 'Port ' + n;
+}
+
 // Click a socket to open or close its detail panel.
 function selectPort(n) {
   selectedPort = (selectedPort === n) ? null : n;
@@ -460,7 +476,7 @@ function renderDetail() {
   host.innerHTML =
     '<div class="detail-bar">' +
       '<div class="detail-left">' +
-        '<span class="detail-title">Port ' + n + '</span>' +
+        '<span class="detail-title" id="detail-title">' + esc(portTitle(n)) + '</span>' +
         '<span class="next-chip" id="next-chip"></span>' +
       '</div>' +
       '<button class="add-sched" onclick="addSchedule(' + n + ')">' + ic('plus') + ' Add Schedule</button>' +
@@ -1027,6 +1043,45 @@ function togglePower(n) {
     .catch(() => { inflight.delete(n); setOffline(true); });
 }
 
+function beginPortNameEdit(el) {
+  el.dataset.editing = '1';
+  el.select();
+}
+function portNameKey(el, e) {
+  e.stopPropagation();
+  if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    el.value = el.dataset.saved || '';
+    delete el.dataset.editing;
+    el.blur();
+  }
+}
+// Rename a port in place. Blank names are allowed and restore the default "Port".
+async function savePortName(n, el) {
+  const name = el.value.trim().slice(0, 24);
+  delete el.dataset.editing;
+  if (name === (el.dataset.saved || '')) {
+    el.value = name;
+    return;
+  }
+  el.dataset.saving = '1';
+  try {
+    const r = await fetch('/api/port/name?n=' + n, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    delete el.dataset.saving;
+    applyStatus(d);
+  } catch (e) {
+    delete el.dataset.saving;
+    setOffline(true);
+  }
+}
+
 // ---- Settings drawer ----------------------------------------------------
 // The form is built from /api/settings/schema: one section per group, one
 // "name ...... control" line per field. A single Save sends every group.
@@ -1209,8 +1264,12 @@ function buildPorts(n) {
     c.title = 'Port ' + i + ' — click for schedule';
     c.onclick = () => selectPort(i);
     c.innerHTML =
-      '<div class="sock-head"><span class="sock-num">' + i + '</span><span class="sock-state">--</span></div>' +
+      '<div class="sock-head"><span class="sock-num">' + i + '</span>' +
+        '<input class="sock-name" type="text" maxlength="24" placeholder="Port" title="Rename port"' +
+          ' onclick="event.stopPropagation()" onfocus="beginPortNameEdit(this)"' +
+          ' onkeydown="portNameKey(this,event)" onblur="savePortName(' + i + ',this)"></div>' +
       '<div class="slot"></div>' +
+      '<div class="sock-state">--</div>' +
       '<div class="port-toggle" onclick="event.stopPropagation(); togglePower(' + i + ')"><span class="toggle-knob"></span></div>' +
       '<div class="sock-read">' +
         '<div class="sock-amps"><span class="mma">--</span> <small>mA</small></div>' +
@@ -1234,6 +1293,14 @@ function updatePort(p) {
   if (inflight.has(p.n)) return;   // waiting on this port's own switch result — hold
   c.className = 'socket st-' + p.state + (p.n === selectedPort ? ' selected' : '');
   if (!ANIMATED.includes(p.state)) c.querySelector('.slot').style.background = '';
+  const nameBtn = c.querySelector('.sock-name');
+  const portName = (p.name || '').trim();
+  if (!nameBtn.dataset.editing && !nameBtn.dataset.saving) {
+    nameBtn.value = portName;
+    nameBtn.dataset.saved = portName;
+  }
+  nameBtn.classList.toggle('named', !!portName);
+  nameBtn.title = portName ? 'Rename ' + portName : 'Rename port';
   c.querySelector('.sock-state').textContent = STATE_LABEL[p.state] || p.state;
   c.querySelector('.port-toggle').className = 'port-toggle' + (p.enabled ? ' on' : '');
 
@@ -1291,6 +1358,7 @@ function applyStatus(d) {
   if (!built) buildPorts(d.ports.length);
   lastPorts = d.ports;
   d.ports.forEach(updatePort);
+  if (selectedPort && $('detail-title')) $('detail-title').textContent = portTitle(selectedPort);
   renderNextChip();
   refreshNextRow();
 }

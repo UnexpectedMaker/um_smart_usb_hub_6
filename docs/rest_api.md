@@ -54,6 +54,7 @@ temperature, total current draw and more.
 | Read all six ports | [`GET /api/ports`](#get-apiports) |
 | Read one port in detail, with its schedule | [`GET /api/ports/{n}`](#get-apiportsn) |
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
+| Rename one port in the web UI | [`POST /api/port/name?n=`](#post-apiportnamen1-6) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
 | Choose which ports power up at boot | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_on_boot":[...]}}` |
 | Change any other setting | [`POST /api/settings`](#post-apisettings) |
@@ -115,6 +116,7 @@ apply nothing. See *Current limitations*.
 | `GET` | `/api/schedules` | All six ports' schedules |
 | `GET` | `/api/settings/schema` | Settings structure + current values |
 | `POST` | `/api/port?n=&on=` | Switch one port |
+| `POST` | `/api/port/name?n=` | Rename one port |
 | `POST` | `/api/schedules` | Replace all schedules |
 | `POST` | `/api/settings` | Update one or more settings groups |
 | `POST` | `/api/theme?value=` | Store the UI theme |
@@ -512,29 +514,29 @@ curl http://192.168.1.100/api/status
   "ports": [
     {
       "n": 1, "enabled": false, "occupied": false, "fault": false,
-      "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
+      "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
     },
     {
       "n": 2, "enabled": true, "occupied": false, "fault": false,
-      "state": "pulse", "mon": true, "v": 5.07, "ma": 0.4, "mw": 2.0, "sched": 0
+      "state": "pulse", "name": "", "mon": true, "v": 5.07, "ma": 0.4, "mw": 2.0, "sched": 0
     },
     {
       "n": 3, "enabled": true, "occupied": true, "fault": true,
-      "state": "fault", "mon": true, "v": 4.61, "ma": 1980.2, "mw": 9129.1, "sched": 0
+      "state": "fault", "name": "Load", "mon": true, "v": 4.61, "ma": 1980.2, "mw": 9129.1, "sched": 0
     },
     {
       "n": 4, "enabled": false, "occupied": true, "fault": false,
-      "state": "blue", "mon": false, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
+      "state": "blue", "name": "", "mon": false, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
     },
     {
       "n": 5, "enabled": true, "occupied": false, "fault": false,
-      "state": "pinkpulse", "mon": true, "v": 0.02, "ma": 0.0, "mw": 0.0,
+      "state": "pinkpulse", "name": "", "mon": true, "v": 0.02, "ma": 0.0, "mw": 0.0,
       "sched": 1,
       "next": { "in": 3542, "on": false, "at": "Sun 17:30", "i": 0 }
     },
     {
       "n": 6, "enabled": true, "occupied": true, "fault": false,
-      "state": "green", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9,
+      "state": "green", "name": "Logger", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9,
       "sched": 2,
       "next": { "in": 82, "on": false, "at": "Sun 16:35", "i": 0 }
     }
@@ -556,6 +558,7 @@ curl http://192.168.1.100/api/status
 | `temp.c`, `temp.h` | `sensors.temp_c`, `sensors.humidity` |
 | `main5v`, `upstream5v` | `power.main_5v`, `power.upstream_5v` |
 | `theme` (UI only) | — |
+| port `name` (UI label) | — |
 
 ---
 
@@ -715,7 +718,10 @@ curl http://192.168.1.100/api/settings/schema
     {
       "name": "ports",
       "label": "Ports",
-      "values": { "power_on_boot": [false, false, false, false, false, true] },
+      "values": {
+        "power_on_boot": [false, false, false, false, false, true],
+        "names": ["", "", "Load", "", "", "Logger"]
+      },
       "fields": []
     }
   ]
@@ -765,12 +771,12 @@ caller sees real device state rather than assuming success:
   "temp": { "valid": true, "c": 30.8, "h": 29.6 },
   "clock": { "synced": true, "time": "16:33", "date": "Sun 02 Aug 2026", "wday": 0, "secs": 59621 },
   "ports": [
-    { "n": 1, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 2, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 3, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 4, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 5, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9, "sched": 0 }
+    { "n": 1, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 2, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 3, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 4, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 5, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "name": "Logger", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9, "sched": 0 }
   ],
   "total": { "ma": 120.4, "mw": 607.9 }
 }
@@ -779,6 +785,24 @@ caller sees real device state rather than assuming success:
 `on` accepts any integer; non-zero is on, `0` is off. If `n` or `on` is missing,
 **nothing is switched** and the current status is returned unchanged with `200`.
 An `n` outside `1..6` is ignored the same way.
+
+---
+
+## POST `/api/port/name?n=<1-6>`
+
+Stores the display name for one port. Send an empty string to return the card
+label to `Port`.
+
+```
+curl -X POST 'http://192.168.1.100/api/port/name?n=6' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Logger"}'
+```
+
+Names are trimmed, control characters are dropped and the stored value is
+limited to 24 characters.
+
+**Returns the full `/api/status` body**, read back after saving.
 
 ---
 
@@ -1435,9 +1459,10 @@ How the API behaves in firmware 1.0.0. Planned fixes are in
    rejected write from an applied one without re-reading.
 2. **No authentication.** Anyone on the LAN can switch ports, and
    `/api/settings/schema` returns the WiFi password in clear text.
-3. **Few REST setters.** Apart from `/api/hub/ports`, the writes are the ones
-   the web UI uses: `/api/port`, `/api/schedules` and `/api/settings` (which
-   also sets `power_on_boot`). There are no per-port REST setters yet.
+3. **Few REST setters.** Apart from `/api/hub/ports` and the port-name setter,
+   the writes are the ones the web UI uses: `/api/port`, `/api/schedules` and
+   `/api/settings` (which also sets `power_on_boot`). There are no per-port
+   boot or schedule REST setters yet.
 4. **No restart endpoint.** Restarting is serial-only (`restart`) — and a
    hostname change only takes effect after a restart.
 5. **Two schedule representations** (string `mode` vs integer `mode` + `on`)

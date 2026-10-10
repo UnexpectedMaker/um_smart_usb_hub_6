@@ -41,7 +41,11 @@
 // Lets config structs use Arduino String fields directly with nlohmann's
 // NLOHMANN_DEFINE_TYPE_* macros.
 inline void to_json(nlohmann::json &j, const String &value) { j = value.c_str(); }
-inline void from_json(const nlohmann::json &j, String &s) { s = j.get_ptr<const std::string *>()->c_str(); }
+inline void from_json(const nlohmann::json &j, String &s)
+{
+    if (const auto *v = j.get_ptr<const std::string *>())
+        s = v->c_str();
+}
 
 // One field in a group's web form. The values themselves come from the
 // group's config struct; this only describes how to present them.
@@ -287,14 +291,18 @@ extern LedsSettings g_leds;
 struct HubPortsConfig
 {
     std::array<bool, HUB_NUM_PORTS> power_on_boot{{false, false, false, false, false, false}};
+    std::array<String, HUB_NUM_PORTS> names{{"", "", "", "", "", ""}};
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot, names);
 
 class PortsSettings : public HubSettingsT<HubPortsConfig>
 {
 public:
     const char *name() const override { return "ports"; }
     const char *label() const override { return "Ports"; }
+
+    void fromJson(const nlohmann::json &j) override;
+    void setName(uint8_t port, const String &name);
 };
 extern PortsSettings g_ports;
 
