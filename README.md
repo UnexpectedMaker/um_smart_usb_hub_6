@@ -30,8 +30,9 @@ and fault status help you see why it isn't behaving as expected.
 
 | | |
 |---|---|
-| Downstream | 6 × USB-C · USB 2.0 |
-| Upstream | 1 × USB-C · USB 2.0 |
+| Downstream | 6 × USB-C · USB 2.0 High Speed (480 Mbps) on every port |
+| Upstream | 1 × USB-C · USB 2.0 High Speed (480 Mbps) |
+| Hub chip | WCH CH339W · Multi-TT: every port has its own transaction translator, so full-speed and low-speed devices don't share bandwidth |
 | Controller | ESP32-S3-WROOM-1 · 16 MB flash · 8 MB PSRAM |
 | Port power | 5V USB-C input · 3A+ supply |
 | 3V3 power | 2 × 3.3V LDOs · headroom for the ESP32-S3, hub chip, peripherals and LEDs |
@@ -40,6 +41,7 @@ and fault status help you see why it isn't behaving as expected.
 | Indicators | Per-port RGB status · power, device presence and faults |
 | Environment | Onboard temperature and humidity sensor |
 | Buttons | IO48 user button · IO0 / Boot · Reset |
+| Case size | 90 mm × 64 mm × 19 mm |
 
 ## It's open source
 

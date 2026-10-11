@@ -77,7 +77,7 @@ static bool collectBody(AsyncWebServerRequest *req, uint8_t *data, size_t len, s
 }
 
 void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
-                         SchedGetFn schedGetFn, SchedSetFn schedSetFn, SaveFn saveFn)
+                         SchedGetFn schedGetFn, SchedSetFn schedSetFn)
 {
     if (_started)
         return;
@@ -132,7 +132,8 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         });
 
     // Settings form: GET the structure and current values of every visible
-    // group; POST {"group":{...},...} to update those groups and save.
+    // group; POST {"group":{...},...} to update those groups. Each group sent
+    // is saved to its own file; groups not sent aren't touched.
     server.on("/api/settings/schema", HTTP_GET, [](AsyncWebServerRequest *req) {
         nlohmann::json groups = nlohmann::json::array();
         for (auto *m : HubRegistry::all())
@@ -146,7 +147,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         "/api/settings", HTTP_POST,
         [](AsyncWebServerRequest *req) { req->send(200, "application/json", "{\"ok\":true}"); },
         nullptr,
-        [saveFn](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
             String body;
             if (!collectBody(req, data, len, index, total, body))
                 return;
@@ -161,9 +162,9 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
                     if (!m)
                         continue;
                     m->fromJson(it.value());
+                    m->save();
                     HubRegistry::dispatchConfigChanged(it.key().c_str());
                 }
-                saveFn();
             }
             catch (...)
             {

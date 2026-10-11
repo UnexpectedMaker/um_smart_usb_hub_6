@@ -32,7 +32,7 @@ The pin map is at the top of `src/main.cpp`.
 
 ## Version
 
-This is firmware **1.0.0**. The version a hub is running is shown in the web
+This is firmware **1.1.0**. The version a hub is running is shown in the web
 page's side panel (Firmware), by the `info` serial command, and in the `fw`
 field of the JSON API. It's set by `HUB_FW_VERSION` at the top of
 `src/main.cpp`.

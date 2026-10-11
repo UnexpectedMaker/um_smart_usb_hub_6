@@ -56,6 +56,7 @@ temperature, total current draw and more.
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
 | Choose which ports power up at boot | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_on_boot":[...]}}` |
+| Name the ports | [`POST /api/settings`](#post-apisettings) with `{"ports":{"names":[...]}}` |
 | Change any other setting | [`POST /api/settings`](#post-apisettings) |
 | Replace the schedules | [`POST /api/schedules`](#post-apischedules) |
 
@@ -244,6 +245,7 @@ curl http://192.168.1.100/api/ports
       "occupied": false,
       "fault": false,
       "state": "off",
+      "name": "",
       "monitor": true,
       "volts": 0.00,
       "ma": 0.0,
@@ -256,6 +258,7 @@ curl http://192.168.1.100/api/ports
       "occupied": false,
       "fault": false,
       "state": "pulse",
+      "name": "",
       "monitor": true,
       "volts": 5.07,
       "ma": 0.4,
@@ -268,6 +271,7 @@ curl http://192.168.1.100/api/ports
       "occupied": true,
       "fault": true,
       "state": "fault",
+      "name": "",
       "monitor": true,
       "volts": 4.61,
       "ma": 1980.2,
@@ -280,6 +284,7 @@ curl http://192.168.1.100/api/ports
       "occupied": true,
       "fault": false,
       "state": "blue",
+      "name": "",
       "monitor": false,
       "volts": 0.00,
       "ma": 0.0,
@@ -292,6 +297,7 @@ curl http://192.168.1.100/api/ports
       "occupied": false,
       "fault": false,
       "state": "pinkpulse",
+      "name": "",
       "monitor": true,
       "volts": 0.02,
       "ma": 0.0,
@@ -307,6 +313,7 @@ curl http://192.168.1.100/api/ports
       "occupied": true,
       "fault": false,
       "state": "green",
+      "name": "Raspberry Pi",
       "monitor": true,
       "volts": 5.05,
       "ma": 120.4,
@@ -326,6 +333,8 @@ curl http://192.168.1.100/api/ports
   flowing: with `main_5v` absent a port can be `enabled` and still dead.
 - `occupied` — a device is plugged in (sense line, works with power off).
 - `fault` — over-current latched by the TPS2552 for that port.
+- `name` — the port's name, set on its card in the web UI or through
+  `/api/settings`. Empty when the port has no name. Up to 24 characters.
 - `state` — the LED state token, so an API client can mirror the physical LED
   exactly. One of:
 
@@ -365,6 +374,7 @@ curl http://192.168.1.100/api/ports/6
   "occupied": true,
   "fault": false,
   "state": "green",
+  "name": "Raspberry Pi",
   "monitor": true,
   "volts": 5.05,
   "ma": 120.4,
@@ -413,6 +423,7 @@ A port with no schedule:
   "occupied": false,
   "fault": false,
   "state": "off",
+  "name": "",
   "monitor": true,
   "volts": 0.00,
   "ma": 0.0,
@@ -512,29 +523,29 @@ curl http://192.168.1.100/api/status
   "ports": [
     {
       "n": 1, "enabled": false, "occupied": false, "fault": false,
-      "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
+      "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
     },
     {
       "n": 2, "enabled": true, "occupied": false, "fault": false,
-      "state": "pulse", "mon": true, "v": 5.07, "ma": 0.4, "mw": 2.0, "sched": 0
+      "state": "pulse", "name": "", "mon": true, "v": 5.07, "ma": 0.4, "mw": 2.0, "sched": 0
     },
     {
       "n": 3, "enabled": true, "occupied": true, "fault": true,
-      "state": "fault", "mon": true, "v": 4.61, "ma": 1980.2, "mw": 9129.1, "sched": 0
+      "state": "fault", "name": "", "mon": true, "v": 4.61, "ma": 1980.2, "mw": 9129.1, "sched": 0
     },
     {
       "n": 4, "enabled": false, "occupied": true, "fault": false,
-      "state": "blue", "mon": false, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
+      "state": "blue", "name": "", "mon": false, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
     },
     {
       "n": 5, "enabled": true, "occupied": false, "fault": false,
-      "state": "pinkpulse", "mon": true, "v": 0.02, "ma": 0.0, "mw": 0.0,
+      "state": "pinkpulse", "name": "", "mon": true, "v": 0.02, "ma": 0.0, "mw": 0.0,
       "sched": 1,
       "next": { "in": 3542, "on": false, "at": "Sun 17:30", "i": 0 }
     },
     {
       "n": 6, "enabled": true, "occupied": true, "fault": false,
-      "state": "green", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9,
+      "state": "green", "name": "Raspberry Pi", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9,
       "sched": 2,
       "next": { "in": 82, "on": false, "at": "Sun 16:35", "i": 0 }
     }
@@ -715,7 +726,10 @@ curl http://192.168.1.100/api/settings/schema
     {
       "name": "ports",
       "label": "Ports",
-      "values": { "power_on_boot": [false, false, false, false, false, true] },
+      "values": {
+        "power_on_boot": [false, false, false, false, false, true],
+        "names": ["", "", "", "", "", "Raspberry Pi"]
+      },
       "fields": []
     }
   ]
@@ -765,12 +779,12 @@ caller sees real device state rather than assuming success:
   "temp": { "valid": true, "c": 30.8, "h": 29.6 },
   "clock": { "synced": true, "time": "16:33", "date": "Sun 02 Aug 2026", "wday": 0, "secs": 59621 },
   "ports": [
-    { "n": 1, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 2, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 3, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 4, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 5, "enabled": false, "occupied": false, "fault": false, "state": "off", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9, "sched": 0 }
+    { "n": 1, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 2, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 3, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 4, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 5, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "name": "Raspberry Pi", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9, "sched": 0 }
   ],
   "total": { "ma": 120.4, "mw": 607.9 }
 }
@@ -800,22 +814,22 @@ curl -X POST 'http://192.168.1.100/api/hub/ports?on=0'      # everything off
 ```json
 {
   "ports": [
-    { "n": 1, "enabled": true, "occupied": false, "fault": false, "state": "pulse",
+    { "n": 1, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
       "monitor": true, "volts": 5.07, "ma": 0.4, "mw": 2.0,
       "schedule": { "count": 0, "next": null } },
-    { "n": 2, "enabled": true, "occupied": false, "fault": false, "state": "pulse",
+    { "n": 2, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
       "monitor": true, "volts": 5.07, "ma": 0.3, "mw": 1.5,
       "schedule": { "count": 0, "next": null } },
-    { "n": 3, "enabled": true, "occupied": false, "fault": false, "state": "pulse",
+    { "n": 3, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
       "monitor": true, "volts": 5.06, "ma": 0.4, "mw": 2.0,
       "schedule": { "count": 0, "next": null } },
-    { "n": 4, "enabled": true, "occupied": false, "fault": false, "state": "pulse",
+    { "n": 4, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
       "monitor": true, "volts": 5.07, "ma": 0.3, "mw": 1.5,
       "schedule": { "count": 0, "next": null } },
-    { "n": 5, "enabled": true, "occupied": false, "fault": false, "state": "pulse",
+    { "n": 5, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
       "monitor": true, "volts": 5.06, "ma": 0.4, "mw": 2.0,
       "schedule": { "count": 0, "next": null } },
-    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green",
+    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "name": "Raspberry Pi",
       "monitor": true, "volts": 5.05, "ma": 120.4, "mw": 607.9,
       "schedule": { "count": 2,
         "next": { "in_s": 82, "on": false, "at": "Sun 16:35", "entry": 0 } } }
@@ -897,7 +911,7 @@ so `invalid` tells you which rules it will refuse to act on:
 
 Partial update: send only the groups and keys you want changed. Each named group
 is updated, its change handler fires (so e.g. a new `utc_offset` re-applies the
-timezone immediately), then everything is saved to flash.
+timezone immediately), and each group sent is saved. Groups you don't send aren't touched.
 
 ```
 curl -X POST 'http://192.168.1.100/api/settings' \
@@ -1022,13 +1036,19 @@ curl -X POST http://usb-hub.local/api/settings \
   -H 'Content-Type: application/json' \
   -d '{"ports":{"power_on_boot":[true,true,false,false,false,false]}}'
 
+# Name the ports ("" = no name)
+curl -X POST http://usb-hub.local/api/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"ports":{"names":["","","Logger","","","Raspberry Pi"]}}'
+
 # Dim the LEDs
 curl -X POST http://usb-hub.local/api/settings \
   -H 'Content-Type: application/json' \
   -d '{"leds":{"brightness":20}}'
 ```
 
-`power_on_boot` needs all six values, port 1 first.
+`power_on_boot` and `names` each need all six values, port 1 first. Sending
+one doesn't change the other.
 
 ## Python
 
@@ -1087,6 +1107,16 @@ def set_power_on_boot(flags):
     """Which ports power up at boot: six booleans, port 1 first."""
     r = requests.post(f"{HUB}/api/settings",
                       json={"ports": {"power_on_boot": flags}}, timeout=5)
+    r.raise_for_status()
+
+
+def set_port_name(n, name):
+    """Name port n (1-6). An empty name clears it. The names are sent as a
+    set of six, so the other five are read first and sent back unchanged."""
+    names = [p["name"] for p in ports()]
+    names[n - 1] = name
+    r = requests.post(f"{HUB}/api/settings",
+                      json={"ports": {"names": names}}, timeout=5)
     r.raise_for_status()
 
 

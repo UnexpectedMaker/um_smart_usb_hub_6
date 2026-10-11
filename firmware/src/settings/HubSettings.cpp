@@ -5,7 +5,7 @@
 // redistribute it and/or modify it under the terms of the GNU General Public
 // License, version 3 or (at your option) any later version. See LICENSE.
 //
-// HubSettings.cpp — the settings registry, /settings.json storage, and every
+// HubSettings.cpp — the settings registry, per-group file storage, and every
 // settings group: their web form fields and the behaviour a few of them carry
 // (timezone + location lookup, WiFi change detection, schedule validation).
 #include "HubSettings.h"
@@ -14,7 +14,8 @@
 #include <string.h>
 #include <time.h>
 
-static const char *SETTINGS_PATH = "/settings.json";
+static const char *SETTINGS_DIR = "/settings";           // one <group>.json per group
+static const char *OLD_SETTINGS_FILE = "/settings.json"; // firmware 1.0.0: all groups in one file
 
 // ---- HubRegistry ---------------------------------------------------------
 
@@ -64,6 +65,47 @@ void HubRegistry::dispatchConfigChanged(const char *name)
 
 // ---- HubConfig -----------------------------------------------------------
 
+bool HubSettings::save() { return _cfg && _cfg->save(*this); }
+
+// Where a group lives: /settings/<name>.json
+static String groupPath(const HubSettings &m) { return String(SETTINGS_DIR) + "/" + m.name() + ".json"; }
+
+// Read and parse one JSON file. False if it's missing, empty or won't parse.
+static bool readJson(const String &path, nlohmann::json &out)
+{
+    File f = LittleFS.open(path, "r");
+    if (!f)
+        return false;
+    String content = f.readString();
+    f.close();
+    if (content.length() == 0)
+        return false;
+    try
+    {
+        out = nlohmann::json::parse(content.c_str());
+        return true;
+    }
+    catch (...)
+    {
+        Serial.printf("[config] %s is corrupt — ignoring it\r\n", path.c_str());
+        return false;
+    }
+}
+
+// Apply stored values to a group. Anything missing or unreadable leaves that
+// group on its defaults without affecting the others.
+static void applyGroup(HubSettings &m, const nlohmann::json &j)
+{
+    try
+    {
+        m.fromJson(j);
+    }
+    catch (...)
+    {
+        Serial.printf("[config] '%s' settings unreadable — using defaults\r\n", m.name());
+    }
+}
+
 bool HubConfig::begin()
 {
     for (auto *m : HubRegistry::all())
@@ -74,6 +116,10 @@ bool HubConfig::begin()
         return false;
     }
     _fs_ready = true;
+    if (!LittleFS.exists(SETTINGS_DIR))
+        LittleFS.mkdir(SETTINGS_DIR);
+    if (LittleFS.exists(OLD_SETTINGS_FILE))
+        migrate();
     return load();
 }
 
@@ -81,63 +127,69 @@ bool HubConfig::load()
 {
     if (!_fs_ready)
         return false;
-
-    nlohmann::json settings;
-    bool have = false;
-    File f = LittleFS.open(SETTINGS_PATH, "r");
-    if (f)
-    {
-        String content = f.readString();
-        f.close();
-        try
-        {
-            settings = nlohmann::json::parse(content.c_str());
-            have = settings.is_object();
-        }
-        catch (...)
-        {
-            Serial.printf("[config] %s is corrupt — using defaults\n", SETTINGS_PATH);
-        }
-    }
-
-    // Each group gets its own entry, or an empty object (= struct defaults).
-    // A group whose stored entry won't parse falls back to defaults on its own
-    // without affecting the others.
     for (auto *m : HubRegistry::all())
     {
-        try
-        {
-            m->fromJson(have && settings.contains(m->name()) ? settings[m->name()]
-                                                             : nlohmann::json::object());
-        }
-        catch (...)
-        {
-            Serial.printf("[config] '%s' settings unreadable — using defaults\n", m->name());
-            m->fromJson(nlohmann::json::object());
-        }
+        nlohmann::json j;
+        if (readJson(groupPath(*m), j))
+            applyGroup(*m, j);
     }
-    Serial.printf("[config] settings loaded%s\n", have ? "" : " (defaults)");
+    Serial.println("[config] settings loaded");
     return true;
 }
 
-bool HubConfig::save()
+bool HubConfig::save(HubSettings &m)
 {
     if (!_fs_ready)
         return false;
-    nlohmann::json j = nlohmann::json::object();
-    for (auto *m : HubRegistry::all())
+    std::string content;
+    try
     {
-        nlohmann::json mj;
-        m->toJson(mj);
-        j[m->name()] = mj;
+        nlohmann::json j;
+        m.toJson(j);
+        content = j.dump(2);
     }
-    std::string content = j.dump(2);
-    File f = LittleFS.open(SETTINGS_PATH, "w");
+    catch (...)
+    {
+        Serial.printf("[config] '%s' settings couldn't be written\r\n", m.name());
+        return false;
+    }
+
+    // Write a temporary file and rename it over the real one, so losing power
+    // mid-write leaves the previous settings intact rather than a half file.
+    String path = groupPath(m);
+    String tmp = path + ".tmp";
+    File f = LittleFS.open(tmp, "w");
     if (!f)
         return false;
-    f.write((const uint8_t *)content.data(), content.size());
+    size_t written = f.write((const uint8_t *)content.data(), content.size());
     f.close();
+    if (written != content.size() || !LittleFS.rename(tmp, path))
+    {
+        LittleFS.remove(tmp);
+        Serial.printf("[config] '%s' settings couldn't be saved\r\n", m.name());
+        return false;
+    }
     return true;
+}
+
+// Firmware 1.0.0 kept every group in one /settings.json. Split it into one
+// file per group, then remove it, so a hub upgraded from 1.0.0 keeps all of
+// its settings.
+void HubConfig::migrate()
+{
+    nlohmann::json old;
+    if (readJson(OLD_SETTINGS_FILE, old) && old.is_object())
+    {
+        for (auto *m : HubRegistry::all())
+        {
+            if (!old.contains(m->name()))
+                continue;
+            applyGroup(*m, old[m->name()]);
+            save(*m);
+        }
+        Serial.println("[config] moved settings from /settings.json to one file per group");
+    }
+    LittleFS.remove(OLD_SETTINGS_FILE);
 }
 
 // ###########################################################################
@@ -214,8 +266,7 @@ void WiFiSettings::setCredentials(const String &ssid, const String &password)
 {
     _config.ssid = ssid;
     _config.password = password;
-    if (_cfg)
-        _cfg->save();
+    save(); // writes only the wifi group
 }
 
 // ===========================================================================
@@ -256,7 +307,7 @@ void LocationSettings::applyTimeZone()
     snprintf(tz, sizeof(tz), "UTC%+d", -_config.utc_offset);
     const char *server = _config.ntp_server.length() ? _config.ntp_server.c_str() : "pool.ntp.org";
     configTzTime(tz, server);
-    Serial.printf("[ntp] sync started: server=%s TZ=%s (utc_offset=%+dh)\n", server, tz, _config.utc_offset);
+    Serial.printf("[ntp] sync started: server=%s TZ=%s (utc_offset=%+dh)\r\n", server, tz, _config.utc_offset);
 }
 
 void LocationSettings::loop()
@@ -290,11 +341,10 @@ void LocationSettings::doIPGeo()
                     _config.city = String(city.c_str());
                 if (cc.length())
                     _config.country = String(cc.c_str());
-                Serial.printf("[loc] detected %s, %s (UTC%+d)\n",
+                Serial.printf("[loc] detected %s, %s (UTC%+d)\r\n",
                               _config.city.c_str(), _config.country.c_str(), _config.utc_offset);
                 applyTimeZone();
-                if (_cfg)
-                    _cfg->save();
+                save(); // writes only the location group
             }
         }
         catch (...)
@@ -315,6 +365,40 @@ std::vector<HubSettingField> LedsSettings::uiSchema()
         {.type = F::T::Bool, .key = "enabled", .label = "Enabled"},
         {.type = F::T::Int, .key = "brightness", .label = "Brightness", .min = 0, .max = 255, .step = 5},
     };
+}
+
+// ===========================================================================
+// ports
+// ===========================================================================
+
+// A port name as stored: control characters (tabs, newlines...) turned into
+// spaces, surrounding spaces trimmed, at most PORT_NAME_MAX characters. Counts
+// UTF-8 characters rather than bytes, so a multi-byte character is never cut
+// in half — half a character is invalid UTF-8 and the JSON library refuses to
+// save it.
+static String cleanPortName(const String &in)
+{
+    String out;
+    int chars = 0;
+    for (size_t i = 0; i < in.length(); i++)
+    {
+        uint8_t c = in[i];
+        if (c < 0x20 || c == 0x7F)
+            c = ' ';
+        bool startsChar = (c & 0xC0) != 0x80; // not a continuation byte
+        if (startsChar && ++chars > PORT_NAME_MAX)
+            break;
+        out += (char)c;
+    }
+    out.trim();
+    return out;
+}
+
+void PortsSettings::fromJson(const nlohmann::json &j)
+{
+    HubSettingsT<HubPortsConfig>::fromJson(j);
+    for (auto &name : _config.names)
+        name = cleanPortName(name);
 }
 
 // ===========================================================================
@@ -411,7 +495,7 @@ void SchedulesSettings::validate()
             {
                 e.invalid = true;
                 e.why = HUB_INVALID_ENDS_AT_START;
-                Serial.printf("[sched] port %u: entry %u ends at its own start time — ignored\n", p + 1, (unsigned)i);
+                Serial.printf("[sched] port %u: entry %u ends at its own start time — ignored\r\n", p + 1, (unsigned)i);
             }
             // ON EVERY: interval floor, pulse must fit the interval, and a
             // windowed repeat can't start and stop at the same time.
@@ -421,21 +505,21 @@ void SchedulesSettings::validate()
                 {
                     e.invalid = true;
                     e.why = HUB_INVALID_INTERVAL;
-                    Serial.printf("[sched] port %u: entry %u repeats faster than %d min — ignored\n",
+                    Serial.printf("[sched] port %u: entry %u repeats faster than %d min — ignored\r\n",
                                   p + 1, (unsigned)i, SCHED_MIN_EVERY);
                 }
                 else if (e.dur == 0 || e.dur >= e.every)
                 {
                     e.invalid = true;
                     e.why = HUB_INVALID_DUR_VS_EVERY;
-                    Serial.printf("[sched] port %u: entry %u on-time doesn't fit its interval — ignored\n",
+                    Serial.printf("[sched] port %u: entry %u on-time doesn't fit its interval — ignored\r\n",
                                   p + 1, (unsigned)i);
                 }
                 else if (!e.allday && hubParseHHMM(e.until) == hubParseHHMM(e.time))
                 {
                     e.invalid = true;
                     e.why = HUB_INVALID_WINDOW;
-                    Serial.printf("[sched] port %u: entry %u window starts and ends together — ignored\n",
+                    Serial.printf("[sched] port %u: entry %u window starts and ends together — ignored\r\n",
                                   p + 1, (unsigned)i);
                 }
             }
@@ -459,7 +543,7 @@ void SchedulesSettings::validate()
                 size_t bad = (list[i].on != list[k].on) ? (list[i].on ? k : i) : k;
                 list[bad].invalid = true;
                 list[bad].why = HUB_INVALID_CLASH;
-                Serial.printf("[sched] port %u: entry %u (%s %s) clashes — ignored\n", p + 1, (unsigned)bad,
+                Serial.printf("[sched] port %u: entry %u (%s %s) clashes — ignored\r\n", p + 1, (unsigned)bad,
                               list[bad].time.c_str(), list[bad].on ? "ON" : "OFF");
             }
         }
@@ -503,7 +587,7 @@ void SchedulesSettings::validate()
                 {
                     B.invalid = true;
                     B.why = HUB_INVALID_INSIDE_WINDOW;
-                    Serial.printf("[sched] port %u: entry %u (%s) falls inside an ON window — ignored\n",
+                    Serial.printf("[sched] port %u: entry %u (%s) falls inside an ON window — ignored\r\n",
                                   p + 1, (unsigned)b, B.time.c_str());
                 }
             }

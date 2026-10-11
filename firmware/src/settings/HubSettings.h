@@ -19,8 +19,9 @@
 //                                  construction, so storage, the web UI and the
 //                                  lifecycle hooks can walk them all without a
 //                                  hand-maintained list.
-//   HubConfig                      loads and saves every group to a single
-//                                  /settings.json on LittleFS.
+//   HubConfig                      stores each group in its own file on
+//                                  LittleFS, /settings/<name>.json, so saving
+//                                  one group writes only that group.
 //
 // The second half is the groups themselves, each stored under its name():
 //
@@ -39,9 +40,11 @@
 
 // ---- Arduino String <-> JSON -------------------------------------------
 // Lets config structs use Arduino String fields directly with nlohmann's
-// NLOHMANN_DEFINE_TYPE_* macros.
+// NLOHMANN_DEFINE_TYPE_* macros. A value that isn't a string throws (it is
+// never read as one), so the whole group is left unchanged rather than the
+// hub crashing on a bad value.
 inline void to_json(nlohmann::json &j, const String &value) { j = value.c_str(); }
-inline void from_json(const nlohmann::json &j, String &s) { s = j.get_ptr<const std::string *>()->c_str(); }
+inline void from_json(const nlohmann::json &j, String &s) { s = j.get<std::string>().c_str(); }
 
 // One field in a group's web form. The values themselves come from the
 // group's config struct; this only describes how to present them.
@@ -71,11 +74,14 @@ class HubSettings
 public:
     virtual ~HubSettings() = default;
 
-    // Gives the group a way to persist its own changes (e.g. the IP-geo lookup
-    // filling in a location). Called for every group by HubConfig::begin().
+    // Connects the group to its storage. Called for every group by
+    // HubConfig::begin().
     void bind(HubConfig &cfg) { _cfg = &cfg; }
 
-    // Unique key in /settings.json and in the settings API.
+    // Write this group — and only this group — to its file in flash.
+    bool save();
+
+    // Its file name (/settings/<name>.json) and its key in the settings API.
     virtual const char *name() const = 0;
     // Heading shown in the web Settings drawer.
     virtual const char *label() const = 0;
@@ -123,7 +129,17 @@ public:
     HubSettingsT() { HubRegistry::add(this); }
 
     void toJson(nlohmann::json &j) const override { j = _config; }
-    void fromJson(const nlohmann::json &j) override { _config = j.get<ConfigT>(); }
+
+    // Apply the keys in `j` on top of the current values. Keys it doesn't
+    // mention keep their current setting, so changing one field doesn't reset
+    // the rest of the group. If `j` doesn't convert, nothing changes.
+    void fromJson(const nlohmann::json &j) override
+    {
+        nlohmann::json merged = _config;
+        if (j.is_object())
+            merged.update(j);
+        _config = merged.get<ConfigT>();
+    }
 
     const ConfigT &config() const { return _config; }
 
@@ -131,19 +147,23 @@ protected:
     ConfigT _config;
 };
 
-// Loads and saves every registered group to /settings.json on LittleFS.
-// Each group is stored under its name(); a missing or unreadable entry falls
-// back to that group's struct defaults.
+// Stores every registered group in its own file, /settings/<name>.json, on
+// LittleFS. A missing or unreadable file leaves that group on its struct
+// defaults without affecting the others.
 class HubConfig
 {
 public:
     // Mount LittleFS (formatting it if it won't mount), bind every group to
-    // this store, and load. Returns false if the filesystem is unusable.
+    // this store, move any 1.0.0 /settings.json across, and load. Returns
+    // false if the filesystem is unusable.
     bool begin();
+    // Read every group from its file.
     bool load();
-    bool save();
+    // Write one group to its file. Use the group's own save().
+    bool save(HubSettings &m);
 
 private:
+    void migrate();
     bool _fs_ready = false;
 };
 
@@ -284,17 +304,25 @@ extern LedsSettings g_leds;
 // ports — the power state each port comes up in at boot. All off by default.
 // Set through the API, not the Settings drawer.
 // ===========================================================================
+// Longest port name, in characters (not bytes).
+#define PORT_NAME_MAX 24
+
 struct HubPortsConfig
 {
     std::array<bool, HUB_NUM_PORTS> power_on_boot{{false, false, false, false, false, false}};
+    std::array<String, HUB_NUM_PORTS> names; // "" = unnamed
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot, names);
 
 class PortsSettings : public HubSettingsT<HubPortsConfig>
 {
 public:
     const char *name() const override { return "ports"; }
     const char *label() const override { return "Ports"; }
+
+    // Loads as usual, then tidies every name: control characters turned into
+    // spaces, surrounding spaces trimmed, cut to PORT_NAME_MAX characters.
+    void fromJson(const nlohmann::json &j) override;
 };
 extern PortsSettings g_ports;
 

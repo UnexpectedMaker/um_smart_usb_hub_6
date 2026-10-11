@@ -23,7 +23,6 @@ public:
     using PortFn = std::function<void(int, bool)>;         // switch port n (1..6)
     using SchedGetFn = std::function<String()>;            // GET /api/schedules body
     using SchedSetFn = std::function<void(const String &)>; // store schedules from a JSON body
-    using SaveFn = std::function<void()>;                  // save all settings to flash
 
     // Suppliers for the REST API. Each returns a complete JSON body.
     struct Rest
@@ -41,7 +40,7 @@ public:
     // Register every route and start listening. Call once the network is up;
     // later calls do nothing.
     void begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
-               SchedGetFn schedGetFn, SchedSetFn schedSetFn, SaveFn saveFn);
+               SchedGetFn schedGetFn, SchedSetFn schedSetFn);
 
 private:
     void registerRest();

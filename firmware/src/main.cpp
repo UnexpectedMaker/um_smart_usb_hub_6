@@ -45,7 +45,7 @@
 #include "settings/HubSettings.h"
 
 // Firmware version, reported by the web UI, the API and 'info'.
-#define HUB_FW_VERSION "1.0.0"
+#define HUB_FW_VERSION "1.1.0"
 
 #define NUM_PORTS HUB_NUM_PORTS
 
@@ -83,7 +83,7 @@
 
 Adafruit_NeoPixel strip(NUM_PORTS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-// Persists every settings group to /settings.json.
+// Stores each settings group in its own file, /settings/<name>.json.
 HubConfig config;
 
 // Power monitors. Measurement only — over-current faults come from the
@@ -202,7 +202,7 @@ void startBootSweep(bool red)
 {
     g_bootSweepRed = red;
     g_bootSweepAt = millis() | 1; // never 0, which means "not running"
-    Serial.printf("[led] %lu ms  boot sweep %s\n", (unsigned long)millis(),
+    Serial.printf("[led] %lu ms  boot sweep %s\r\n", (unsigned long)millis(),
                   red ? "RED (no SSID)" : "GREEN (SSID set)");
 }
 
@@ -216,7 +216,7 @@ bool renderBootSweep()
     if (t >= BOOT_SWEEP_MS)
     {
         g_bootSweepAt = 0;
-        Serial.printf("[led] %lu ms  boot sweep done\n", (unsigned long)now);
+        Serial.printf("[led] %lu ms  boot sweep done\r\n", (unsigned long)now);
         return false;
     }
     // The head moves one LED every 100 ms, leaving a short fading trail.
@@ -503,7 +503,7 @@ void serviceSchedules()
             if (e.at != nowAt)
                 continue;
             ports[i].setEnabled(e.on);
-            Serial.printf("[sched] port %u -> %s\n", i + 1, e.on ? "on" : "off");
+            Serial.printf("[sched] port %u -> %s\r\n", i + 1, e.on ? "on" : "off");
 
             // A one-shot entry disables itself after its LAST event — for an
             // entry with a window that's the closing OFF, so the window runs.
@@ -511,7 +511,7 @@ void serviceSchedules()
             bool hasWindow = entry.on && hubEntryWindow(entry) > 0;
             if (entry.once && (!hasWindow || e.tail))
             {
-                Serial.printf("[sched] port %u: one-shot fired, entry disabled\n", i + 1);
+                Serial.printf("[sched] port %u: one-shot fired, entry disabled\r\n", i + 1);
                 g_schedules.disableEntry(i, e.idx);
                 changed = true;
                 break; // this port's events are stale now; rebuilt next pass
@@ -521,7 +521,7 @@ void serviceSchedules()
     if (changed)
     {
         g_schedules.validate();
-        config.save();
+        g_schedules.save();
     }
 }
 
@@ -551,7 +551,7 @@ void reconcileSchedules()
             best = &e;
         }
         ports[i].setEnabled(best->on);
-        Serial.printf("[sched] catch-up: port %u -> %s (last due %d min ago)\n", i + 1,
+        Serial.printf("[sched] catch-up: port %u -> %s (last due %d min ago)\r\n", i + 1,
                       best->on ? "on" : "off", (nowAt - best->at + 10080) % 10080);
     }
 }
@@ -680,6 +680,7 @@ String buildStatusJson()
         j += ",\"occupied\":" + String(jb(port.isOccupied()));
         j += ",\"fault\":" + String(jb(port.hasFault()));
         j += ",\"state\":\"" + String(portStateStr(port)) + "\"";
+        j += ",\"name\":\"" + jsonEsc(g_ports.config().names[i]) + "\"";
         j += ",\"mon\":" + String(jb(r.ok));
         j += ",\"v\":" + String(r.volts, 2);
         j += ",\"ma\":" + String(r.ma, 1);
@@ -765,6 +766,7 @@ String portJson(uint8_t i, bool detail)
     j += ",\"occupied\":" + String(jb(port.isOccupied()));
     j += ",\"fault\":" + String(jb(port.hasFault()));
     j += ",\"state\":\"" + String(portStateStr(port)) + "\"";
+    j += ",\"name\":\"" + jsonEsc(g_ports.config().names[i]) + "\"";
     j += ",\"monitor\":" + String(jb(r.ok));
     j += ",\"volts\":" + String(r.volts, 2);
     j += ",\"ma\":" + String(r.ma, 1);
@@ -872,12 +874,12 @@ void startOTA()
     started = true;
     ArduinoOTA.setHostname(g_device.hostname().c_str());
     ArduinoOTA.onStart([]() { Serial.println("[ota] update starting"); });
-    ArduinoOTA.onEnd([]() { Serial.println("\n[ota] update complete"); });
+    ArduinoOTA.onEnd([]() { Serial.println("\r\n[ota] update complete"); });
     ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { Serial.printf("[ota] %u%%\r", t ? (p * 100) / t : 0); });
-    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] error %u\n", e); });
+    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] error %u\r\n", e); });
     ArduinoOTA.begin();
     MDNS.addService("http", "tcp", 80); // advertise the web UI as well
-    Serial.printf("[ota] ready — http://%s.local/\n", g_device.hostname().c_str());
+    Serial.printf("[ota] ready — http://%s.local/\r\n", g_device.hostname().c_str());
 }
 
 // Start (or restart) a background connection with the stored settings.
@@ -892,7 +894,7 @@ void connectWiFi()
             WiFi.disconnect(false, false);
         return;
     }
-    Serial.printf("[wifi] connecting to '%s' in background...\n", w.ssid.c_str());
+    Serial.printf("[wifi] connecting to '%s' in background...\r\n", w.ssid.c_str());
     WiFi.setHostname(g_device.hostname().c_str()); // the name the router sees
     WiFi.mode(WIFI_STA);
     WiFi.persistent(false);      // credentials live in our settings, not NVS
@@ -907,7 +909,7 @@ void connectWiFi()
     if (!w.dhcp && ip.fromString(w.ip) && gw.fromString(w.gateway) && sn.fromString(w.subnet))
     {
         WiFi.config(ip, gw, sn, gw);
-        Serial.printf("[wifi] static address %s\n", w.ip.c_str());
+        Serial.printf("[wifi] static address %s\r\n", w.ip.c_str());
     }
     else
     {
@@ -922,7 +924,7 @@ void connectWiFi()
 // settings groups the network is up (location starts NTP).
 void startNetServices()
 {
-    Serial.printf("[wifi] connected — IP %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[wifi] connected — IP %s\r\n", WiFi.localIP().toString().c_str());
     webServer.setRest({apiHubJson, apiPortsJson, apiPortJson, apiPortScheduleJson,
                        [](bool on) {
                            for (auto &p : ports)
@@ -932,7 +934,7 @@ void startNetServices()
         buildStatusJson,
         [](const String &t) {
             g_website.setTheme(t);
-            config.save();
+            g_website.save();
         },
         [](int n, bool on) {
             if (n >= 1 && n <= NUM_PORTS)
@@ -941,10 +943,9 @@ void startNetServices()
         []() { return g_schedules.toJsonString(); },
         [](const String &body) {
             if (g_schedules.setFromJson(body))
-                config.save();
-        },
-        []() { config.save(); });
-    Serial.printf("[web] http://%s/\n", WiFi.localIP().toString().c_str());
+                g_schedules.save();
+        });
+    Serial.printf("[web] http://%s/\r\n", WiFi.localIP().toString().c_str());
     startOTA();
     HubRegistry::dispatchNetUp(WiFi.localIP().toString().c_str());
 }
@@ -957,7 +958,7 @@ void serviceWiFi()
     if (g_wifiLost)
     {
         g_wifiLost = false;
-        Serial.printf("[wifi] disconnected (reason %u) — will retry\n", g_wifiReason);
+        Serial.printf("[wifi] disconnected (reason %u) — will retry\r\n", g_wifiReason);
     }
     if (g_wifi.config().ssid.length() == 0)
         return;
@@ -1006,29 +1007,29 @@ void printInfo()
 {
     uint32_t up = millis() / 1000;
     Serial.println("---- Smart USB Hub ----------------------------------------");
-    Serial.printf("firmware   : %s\n", HUB_FW_VERSION);
-    Serial.printf("last boot  : %s\n", resetReasonStr(esp_reset_reason()));
-    Serial.printf("uptime     : %lud %luh %lum %lus\n", (unsigned long)(up / 86400),
+    Serial.printf("firmware   : %s\r\n", HUB_FW_VERSION);
+    Serial.printf("last boot  : %s\r\n", resetReasonStr(esp_reset_reason()));
+    Serial.printf("uptime     : %lud %luh %lum %lus\r\n", (unsigned long)(up / 86400),
                   (unsigned long)(up % 86400 / 3600), (unsigned long)(up % 3600 / 60), (unsigned long)(up % 60));
-    Serial.printf("heap free  : %u bytes (largest block %u)\n",
+    Serial.printf("heap free  : %u bytes (largest block %u)\r\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
     Serial.println("-- network ------------------------------------------------");
     const HubWiFiConfig &w = g_wifi.config();
-    Serial.printf("name       : %s\n", g_device.config().device_name.c_str());
-    Serial.printf("hostname   : %s.local\n", g_device.hostname().c_str());
-    Serial.printf("addressing : %s\n", w.dhcp ? "DHCP" : "static");
-    Serial.printf("ssid       : %s\n", w.ssid.length() ? w.ssid.c_str() : "<not set>");
-    Serial.printf("password   : %s\n", w.password.length() ? "set" : "<not set>");
-    Serial.printf("state      : %s\n", wifiStateStr());
+    Serial.printf("name       : %s\r\n", g_device.config().device_name.c_str());
+    Serial.printf("hostname   : %s.local\r\n", g_device.hostname().c_str());
+    Serial.printf("addressing : %s\r\n", w.dhcp ? "DHCP" : "static");
+    Serial.printf("ssid       : %s\r\n", w.ssid.length() ? w.ssid.c_str() : "<not set>");
+    Serial.printf("password   : %s\r\n", w.password.length() ? "set" : "<not set>");
+    Serial.printf("state      : %s\r\n", wifiStateStr());
     if (WiFi.status() == WL_CONNECTED)
     {
-        Serial.printf("ip         : %s   (gw %s)\n", WiFi.localIP().toString().c_str(),
+        Serial.printf("ip         : %s   (gw %s)\r\n", WiFi.localIP().toString().c_str(),
                       WiFi.gatewayIP().toString().c_str());
-        Serial.printf("rssi       : %d dBm\n", WiFi.RSSI());
-        Serial.printf("web ui     : http://%s/\n", WiFi.localIP().toString().c_str());
+        Serial.printf("rssi       : %d dBm\r\n", WiFi.RSSI());
+        Serial.printf("web ui     : http://%s/\r\n", WiFi.localIP().toString().c_str());
     }
-    Serial.printf("mac        : %s\n", WiFi.macAddress().c_str());
+    Serial.printf("mac        : %s\r\n", WiFi.macAddress().c_str());
 
     Serial.println("-- time ---------------------------------------------------");
     struct tm tmNow;
@@ -1036,41 +1037,46 @@ void printInfo()
     {
         char buf[40];
         strftime(buf, sizeof(buf), "%a %d %b %Y %H:%M:%S", &tmNow);
-        Serial.printf("local time : %s\n", buf);
+        Serial.printf("local time : %s\r\n", buf);
     }
     else
         Serial.println("local time : not synced");
     const HubLocationConfig &loc = g_location.config();
-    Serial.printf("location   : %s %s  UTC%+d\n", loc.city.c_str(), loc.country.c_str(), loc.utc_offset);
-    Serial.printf("ntp server : %s\n", loc.ntp_server.c_str());
+    Serial.printf("location   : %s %s  UTC%+d\r\n", loc.city.c_str(), loc.country.c_str(), loc.utc_offset);
+    Serial.printf("ntp server : %s\r\n", loc.ntp_server.c_str());
 
     Serial.println("-- power rails --------------------------------------------");
-    Serial.printf("main 5V    : %s\n", main5vPresent() ? "present" : "ABSENT");
-    Serial.printf("upstream 5V: %s\n", upstream5vPresent() ? "present" : "ABSENT");
+    Serial.printf("main 5V    : %s\r\n", main5vPresent() ? "present" : "ABSENT");
+    Serial.printf("upstream 5V: %s\r\n", upstream5vPresent() ? "present" : "ABSENT");
 
     Serial.println("-- devices ------------------------------------------------");
-    Serial.printf("expander   : %s\n", ioex.connected() ? "ok" : "NOT RESPONDING");
-    Serial.printf("ina3221 #1 : %s (ports 1-3)\n", g_inaAok ? "ok" : "not found");
-    Serial.printf("ina3221 #2 : %s (ports 4-6)\n", g_inaBok ? "ok" : "not found");
+    Serial.printf("expander   : %s\r\n", ioex.connected() ? "ok" : "NOT RESPONDING");
+    Serial.printf("ina3221 #1 : %s (ports 1-3)\r\n", g_inaAok ? "ok" : "not found");
+    Serial.printf("ina3221 #2 : %s (ports 4-6)\r\n", g_inaBok ? "ok" : "not found");
     if (g_ahtOk)
-        Serial.printf("aht20      : ok  %.1f C  %.1f %%RH\n", g_tempC, g_humid);
+        Serial.printf("aht20      : ok  %.1f C  %.1f %%RH\r\n", g_tempC, g_humid);
     else
         Serial.println("aht20      : not found");
-    Serial.printf("led bright : %u/255%s\n", (unsigned)g_leds.config().brightness,
+    Serial.printf("led bright : %u/255%s\r\n", (unsigned)g_leds.config().brightness,
                   g_leds.config().enabled ? "" : "  (LEDs disabled)");
 
     Serial.println("-- ports --------------------------------------------------");
-    Serial.println(" #  power  device  fault  state       volts    current    power   next change");
+    // Header and rows use the same column widths, so every value sits under
+    // its heading. Readings are right-aligned under right-aligned headings.
+    Serial.printf(" #  %-24s  %-5s  %-6s  %-5s  %-10s  %7s  %10s  %10s  %s\r\n",
+                  "name", "power", "device", "fault", "state", "volts", "current", "power", "next change");
     float totalMa = 0.0f, totalMw = 0.0f;
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
         USBPort &port = ports[i];
         PortReading r = readPort(i);
-        char meas[40];
+        char volts[12] = "--", amps[16] = "--", watts[16] = "--";
         if (r.ok)
-            snprintf(meas, sizeof(meas), "%6.2fV %8.1fmA %8.1fmW", r.volts, r.ma, r.mw);
-        else
-            snprintf(meas, sizeof(meas), "%s", "   no monitor fitted   ");
+        {
+            snprintf(volts, sizeof(volts), "%.2fV", r.volts);
+            snprintf(amps, sizeof(amps), "%.1fmA", r.ma);
+            snprintf(watts, sizeof(watts), "%.1fmW", r.mw);
+        }
         totalMa += r.ma;
         totalMw += r.mw;
 
@@ -1079,11 +1085,21 @@ void printInfo()
         if (nc.valid)
             snprintf(next, sizeof(next), "%s in %dm (%s)", nc.on ? "ON" : "OFF", nc.mins, nc.at);
 
-        Serial.printf(" %u  %-5s  %-6s  %-5s  %-10s  %s  %s\n", i + 1, port.isEnabled() ? "ON" : "off",
-                      port.isOccupied() ? "yes" : "-", port.hasFault() ? "FAULT" : "-",
-                      portStateStr(port), meas, next);
+        // Name padded to PORT_NAME_MAX characters — counted as characters, not
+        // bytes, so names with accented letters still line up.
+        String name = g_ports.config().names[i].length() ? g_ports.config().names[i] : String("-");
+        int chars = 0;
+        for (char ch : name)
+            if (((uint8_t)ch & 0xC0) != 0x80)
+                chars++;
+        while (chars++ < PORT_NAME_MAX)
+            name += ' ';
+
+        Serial.printf(" %u  %s  %-5s  %-6s  %-5s  %-10s  %7s  %10s  %10s  %s\r\n", i + 1, name.c_str(),
+                      port.isEnabled() ? "ON" : "off", port.isOccupied() ? "yes" : "-",
+                      port.hasFault() ? "FAULT" : "-", portStateStr(port), volts, amps, watts, next);
     }
-    Serial.printf("total draw : %.1f mA  %.1f mW\n", totalMa, totalMw);
+    Serial.printf("total draw : %.1f mA  %.1f mW\r\n", totalMa, totalMw);
 
     // Live entries per port, with disabled / invalid ones counted separately.
     Serial.print("schedules  :");
@@ -1108,7 +1124,7 @@ void handleSerialCommand(String cmd)
         String v = cmd.substring(9);
         v.trim();
         g_wifi.setCredentials(v, g_wifi.config().password); // saves
-        Serial.printf("[cmd] ssid set to '%s' — type 'wifi' to connect\n", v.c_str());
+        Serial.printf("[cmd] ssid set to '%s' — type 'wifi' to connect\r\n", v.c_str());
     }
     else if (cmd.startsWith("set_pass "))
     {
@@ -1127,7 +1143,7 @@ void handleSerialCommand(String cmd)
         if (p >= 1 && p <= NUM_PORTS && (state == "on" || state == "off"))
         {
             ports[p - 1].setEnabled(state == "on");
-            Serial.printf("[cmd] port %d %s\n", p, state.c_str());
+            Serial.printf("[cmd] port %d %s\r\n", p, state.c_str());
         }
         else
             Serial.println("[cmd] usage: port <1-6> on|off");
@@ -1138,13 +1154,13 @@ void handleSerialCommand(String cmd)
         {
             PortReading r = readPort(i);
             if (r.ok)
-                Serial.printf("  port %u: %.3f V  %.1f mA  %.1f mW\n", i + 1, r.volts, r.ma, r.mw);
+                Serial.printf("  port %u: %.3f V  %.1f mA  %.1f mW\r\n", i + 1, r.volts, r.ma, r.mw);
             else
-                Serial.printf("  port %u: monitor not present\n", i + 1);
+                Serial.printf("  port %u: monitor not present\r\n", i + 1);
         }
-        Serial.printf("  INA1 alerts  TC:%s CRIT:%s WARN:%s\n",
+        Serial.printf("  INA1 alerts  TC:%s CRIT:%s WARN:%s\r\n",
                       alertStr(INA1_TC_PIN), alertStr(INA1_CRIT_PIN), alertStr(INA1_WARN_PIN));
-        Serial.printf("  INA2 alerts  TC:%s CRIT:%s WARN:%s\n",
+        Serial.printf("  INA2 alerts  TC:%s CRIT:%s WARN:%s\r\n",
                       alertStr(INA2_TC_PIN), alertStr(INA2_CRIT_PIN), alertStr(INA2_WARN_PIN));
     }
     else if (cmd == "info")
@@ -1170,7 +1186,7 @@ void handleSerialCommand(String cmd)
         Serial.println("  help               - this list");
     }
     else if (cmd.length())
-        Serial.printf("[cmd] unknown: '%s'\n", cmd.c_str());
+        Serial.printf("[cmd] unknown: '%s'\r\n", cmd.c_str());
 }
 
 // Collect typed characters into a line and run it on Enter. Characters are
@@ -1216,7 +1232,7 @@ void setup()
     Serial.begin(115200);
     // Reported first: the reset reason survives the reset, so this shows a
     // brownout or crash even when a restart loop is too quick to catch.
-    Serial.printf("[boot] reset reason: %d (%s)\n", (int)esp_reset_reason(), resetReasonStr(esp_reset_reason()));
+    Serial.printf("[boot] reset reason: %d (%s)\r\n", (int)esp_reset_reason(), resetReasonStr(esp_reset_reason()));
 
     // LEDs stay dark until settings (and so brightness) are loaded.
     strip.begin();
@@ -1231,7 +1247,7 @@ void setup()
         Serial.println("[ioex] XL9555 present and responding at 0x20");
     else
         Serial.printf("[ioex] XL9555 NOT responding at 0x20 (I2C error %u) — "
-                      "port power + fault control are DEAD\n",
+                      "port power + fault control are DEAD\r\n",
                       ioex.last_error());
 
     // Power monitors: set the shunt on every channel, then check each chip
@@ -1245,13 +1261,13 @@ void setup()
     if (g_inaAok)
         Serial.println("[ina] INA3221 #1 (ports 1-3) present at 0x40");
     else
-        Serial.printf("[ina] INA3221 #1 (ports 1-3) NOT found at 0x40 (err %u) — monitoring off for ports 1-3\n",
+        Serial.printf("[ina] INA3221 #1 (ports 1-3) NOT found at 0x40 (err %u) — monitoring off for ports 1-3\r\n",
                       ina_a.last_error());
     g_inaBok = ina_b.begin(INA3221_ADDR_VS);
     if (g_inaBok)
         Serial.println("[ina] INA3221 #2 (ports 4-6) present at 0x41");
     else
-        Serial.printf("[ina] INA3221 #2 (ports 4-6) NOT found at 0x41 (err %u) — monitoring off for ports 4-6\n",
+        Serial.printf("[ina] INA3221 #2 (ports 4-6) NOT found at 0x41 (err %u) — monitoring off for ports 4-6\r\n",
                       ina_b.last_error());
 
     // Some DHT20 library versions call Wire.begin() with no pins inside
@@ -1261,7 +1277,7 @@ void setup()
     g_ahtOk = aht.isConnected();
     Serial.println(g_ahtOk ? "[aht] AHT20 present at 0x38" : "[aht] AHT20 NOT found at 0x38 — temperature/humidity off");
 
-    config.begin();         // mount LittleFS and load /settings.json
+    config.begin();         // mount LittleFS and load each group from /settings/
     g_schedules.validate(); // flag bad entries before anything can fire
 
     strip.setBrightness(g_leds.config().brightness);
