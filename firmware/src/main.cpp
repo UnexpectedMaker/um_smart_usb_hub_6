@@ -917,8 +917,8 @@ String scheduleEntriesJson(uint8_t i)
     return j + "]";
 }
 
-// One port for the REST API. `detail` adds power_on_boot,
-// auto_power_on_connect and the full list of schedule entries.
+// One port for the REST API. `detail` adds power_mode and the full list of
+// schedule entries.
 String portJson(uint8_t i, bool detail)
 {
     USBPort &port = ports[i];
@@ -934,10 +934,7 @@ String portJson(uint8_t i, bool detail)
     j += ",\"ma\":" + String(r.ma, 1);
     j += ",\"mw\":" + String(r.mw, 1);
     if (detail)
-    {
-        j += ",\"power_on_boot\":" + String(jb(g_ports.config().power_on_boot[i]));
-        j += ",\"auto_power_on_connect\":" + String(jb(g_ports.config().auto_power_on_connect[i]));
-    }
+        j += ",\"power_mode\":\"" + jsonEsc(g_ports.config().power_mode[i]) + "\"";
     j += ",\"schedule\":{\"count\":" + String(liveScheduleCount(i));
     j += ",\"next\":" + nextJson(i);
     if (detail)
@@ -1454,7 +1451,7 @@ void setup()
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
         ports[i].begin();
-        if (g_ports.config().power_on_boot[i])
+        if (g_ports.config().power_mode[i] == "boot")
             ports[i].enable();
     }
 
@@ -1501,12 +1498,12 @@ void loop()
         g_expanderIrq = false;
         serviceExpander();
     }
-    // A plug or unplug on a port set to auto power on connect switches its
-    // power to match.
+    // A plug or unplug on a port in "connect" power mode switches its power to
+    // match.
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
         USBPort &port = ports[i];
-        if (port.senseDirty() && port.serviceSense() && g_ports.config().auto_power_on_connect[i])
+        if (port.senseDirty() && port.serviceSense() && g_ports.config().power_mode[i] == "connect")
         {
             port.setEnabled(port.isOccupied());
             Serial.printf("[port] %u device %s — auto power %s\r\n", i + 1,

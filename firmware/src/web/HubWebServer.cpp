@@ -52,6 +52,8 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
         }
         if (f.help)
             fj["help"] = f.help;
+        if (f.value)
+            fj["value"] = f.value;
         fields.push_back(fj);
     }
     g["fields"] = fields;

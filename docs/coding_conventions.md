@@ -63,7 +63,7 @@ file is for:
 | Global objects | `g_` prefix | `g_ports`, `g_schedules`, `g_tempC` |
 | Private members | `_` prefix | `_config`, `_enabled` |
 | Constants and macros | `UPPER_SNAKE` | `NUM_PORTS`, `PORT_NAME_MAX`, `I2C_SDA` |
-| JSON keys | `snake_case` | `power_on_boot`, `device_name`, `utc_offset` |
+| JSON keys | `snake_case` | `power_mode`, `device_name`, `utc_offset` |
 
 ## Formatting
 
@@ -161,7 +161,7 @@ The worked example below is how port names were added to the `ports` group.
 
 struct HubPortsConfig
 {
-    std::array<bool, HUB_NUM_PORTS> power_on_boot{{false, false, false, false, false, false}};
+    std::array<String, HUB_NUM_PORTS> power_mode{{"manual", "manual", "manual", "manual", "manual", "manual"}};
     std::array<String, HUB_NUM_PORTS> names; // "" = unnamed
 };
 ```
@@ -172,7 +172,7 @@ give here is what a hub uses until the value is set.
 ## 2. Add it to the JSON macro
 
 ```cpp
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot, names);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_mode, names);
 ```
 
 That's all it takes to load and save it. Use the `_WITH_DEFAULT` form:
@@ -229,10 +229,10 @@ curl -X POST http://usb-hub.local/api/settings \
 The hub applies it, saves that group, and calls the group's
 `onConfigChanged()`.
 
-**In the Settings panel.** A single bool, number or text field can be shown in
-the Settings panel by adding it to the group's `uiSchema()`. Port names aren't
-there — they're edited on the port cards — so `PortsSettings` has no
-`uiSchema()`.
+**In the Settings panel.** A bool, number or text field, or a row of per-port
+buttons (`PortBools`, like the `power_mode` rows), is shown in the Settings
+panel by adding it to the group's `uiSchema()`. Port names aren't there — they're edited on the
+port cards — so they're not in `PortsSettings::uiSchema()`.
 
 **From your own code.** Change the value, then save the group:
 

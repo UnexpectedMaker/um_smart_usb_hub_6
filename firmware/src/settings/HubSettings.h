@@ -55,7 +55,8 @@ struct HubSettingField
         Bool,      // on/off button
         Int,       // number box, bounded by min/max, stepping by step
         String,    // text box (masked automatically if the key looks secret)
-        PortBools  // one on/off button per port, numbered 1-6 (a bool array)
+        PortBools  // one on/off button per port, numbered 1-6. With `value` set,
+                   // a button is on when that port's entry equals `value`
     };
     T type;
     const char *key;            // JSON key inside the group's config
@@ -64,6 +65,7 @@ struct HubSettingField
     long max = 0;               // Int only
     long step = 1;              // Int only
     const char *help = nullptr; // optional one-line hint shown under the field
+    const char *value = nullptr;   // PortBools only: the entry an "on" button stands for
 };
 
 class HubConfig;
@@ -302,21 +304,22 @@ public:
 extern LedsSettings g_leds;
 
 // ===========================================================================
-// ports — per-port options: power on at boot, auto power on connect, and the
-// port names. Power options are set in the Settings drawer; names on the port
-// cards.
+// ports — per-port options: the power mode and the port names. Power modes are
+// set in the Settings drawer; names on the port cards.
 // ===========================================================================
 // Longest port name, in characters (not bytes).
 #define PORT_NAME_MAX 24
 
 struct HubPortsConfig
 {
-    std::array<bool, HUB_NUM_PORTS> power_on_boot{{false, false, false, false, false, false}};
-    // On: plugging a device in powers the port on, unplugging powers it off.
-    std::array<bool, HUB_NUM_PORTS> auto_power_on_connect{{false, false, false, false, false, false}};
+    // How each port's power is controlled:
+    //   "manual"   only switched by you (web UI, API, button, schedules)
+    //   "boot"     powered on at startup
+    //   "connect"  powered on when a device is plugged in, off when unplugged
+    std::array<String, HUB_NUM_PORTS> power_mode{{"manual", "manual", "manual", "manual", "manual", "manual"}};
     std::array<String, HUB_NUM_PORTS> names; // "" = unnamed
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot, auto_power_on_connect, names);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_mode, names);
 
 class PortsSettings : public HubSettingsT<HubPortsConfig>
 {
@@ -325,8 +328,10 @@ public:
     const char *label() const override { return "Ports"; }
     std::vector<HubSettingField> uiSchema() override;
 
-    // Loads as usual, then tidies every name: control characters turned into
-    // spaces, surrounding spaces trimmed, cut to PORT_NAME_MAX characters.
+    // Loads as usual, then: an unknown power mode becomes "manual"; settings
+    // saved by 1.1.0 (power_on_boot, six bools) load as "boot"; and every name
+    // is tidied — control characters turned into spaces, surrounding spaces
+    // trimmed, cut to PORT_NAME_MAX characters.
     void fromJson(const nlohmann::json &j) override;
 };
 extern PortsSettings g_ports;

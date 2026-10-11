@@ -55,8 +55,7 @@ temperature, total current draw and more.
 | Read one port in detail, with its schedule | [`GET /api/ports/{n}`](#get-apiportsn) |
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
-| Choose which ports power up at boot | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_on_boot":[...]}}` |
-| Power ports on when a device is plugged in (and off when unplugged) | [`POST /api/settings`](#post-apisettings) with `{"ports":{"auto_power_on_connect":[...]}}` |
+| Set each port's power mode: manual, on at boot, or on while a device is plugged in | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_mode":[...]}}` |
 | Name the ports | [`POST /api/settings`](#post-apisettings) with `{"ports":{"names":[...]}}` |
 | Change any other setting | [`POST /api/settings`](#post-apisettings) |
 | Replace the schedules | [`POST /api/schedules`](#post-apischedules) |
@@ -361,8 +360,8 @@ curl http://192.168.1.100/api/ports
 
 ## GET `/api/ports/{n}`
 
-One port: everything from `/api/ports`, **plus** `power_on_boot`,
-`auto_power_on_connect` and the full schedule entry list.
+One port: everything from `/api/ports`, **plus** `power_mode` and the full
+schedule entry list.
 
 ```
 curl http://192.168.1.100/api/ports/6
@@ -380,8 +379,7 @@ curl http://192.168.1.100/api/ports/6
   "volts": 5.05,
   "ma": 120.4,
   "mw": 607.9,
-  "power_on_boot": false,
-  "auto_power_on_connect": false,
+  "power_mode": "manual",
   "schedule": {
     "count": 2,
     "next": { "in_s": 82, "on": false, "at": "Sun 16:35", "entry": 0 },
@@ -430,8 +428,7 @@ A port with no schedule:
   "volts": 0.00,
   "ma": 0.0,
   "mw": 0.0,
-  "power_on_boot": false,
-  "auto_power_on_connect": false,
+  "power_mode": "manual",
   "schedule": { "count": 0, "next": null, "entries": [] }
 }
 ```
@@ -730,15 +727,14 @@ curl http://192.168.1.100/api/settings/schema
       "name": "ports",
       "label": "Ports",
       "values": {
-        "power_on_boot": [false, false, false, false, false, true],
-        "auto_power_on_connect": [false, false, false, false, false, false],
+        "power_mode": ["manual", "manual", "connect", "manual", "manual", "boot"],
         "names": ["", "", "", "", "", "Raspberry Pi"]
       },
       "fields": [
-        { "type": "port_bools", "key": "power_on_boot", "label": "Power on boot",
-          "help": "Ports switched on at startup" },
-        { "type": "port_bools", "key": "auto_power_on_connect", "label": "Auto power on connect",
-          "help": "On when a device is plugged in, off when unplugged" }
+        { "type": "port_bools", "key": "power_mode", "label": "Power on boot",
+          "help": "Ports switched on at startup", "value": "boot" },
+        { "type": "port_bools", "key": "power_mode", "label": "Auto power on connect",
+          "help": "On when a device is plugged in, off when unplugged", "value": "connect" }
       ]
     }
   ]
@@ -750,8 +746,16 @@ curl http://192.168.1.100/api/settings/schema
 - **`values.password` is returned in clear text.** Anything on the LAN can read
   the WiFi password from this endpoint.
 - Field `type` is one of `bool`, `int`, `string`, `port_bools`. A `port_bools`
-  value is an array of six booleans, port 1 first, shown as one numbered
-  on/off button per port.
+  field is a row of six numbered on/off buttons, one per port. With `value`,
+  several rows share one key: a port's button is on when its entry equals that
+  row's `value`. Turning a port on in one row turns it off in the others; a
+  port on in no row is `"manual"`, shown as **M** in the group heading.
+- `power_mode` is one value per port:
+  - `"manual"` — only switched by you (web UI, API, button, schedules)
+  - `"boot"` — powered on at startup
+  - `"connect"` — powered on when a device is plugged in, off when unplugged
+
+  Any other value is stored as `"manual"`.
 - `min`/`max`/`step` appear only on `int` fields.
 - `help` is an optional one-line hint shown under the field.
 - Group order follows registration order and is **not guaranteed stable** — key
@@ -1042,15 +1046,11 @@ curl -s -X POST "$HUB/api/port?n=$1&on=1" > /dev/null
 ### Change settings
 
 ```sh
-# Ports 1 and 2 power up at boot, the rest stay off
+# Port 1 powers up at boot; ports 2 and 3 power on when a device is plugged
+# in and off when it's unplugged; the rest are manual
 curl -X POST http://usb-hub.local/api/settings \
   -H 'Content-Type: application/json' \
-  -d '{"ports":{"power_on_boot":[true,true,false,false,false,false]}}'
-
-# Ports 1 and 3 power on when a device is plugged in, off when it's unplugged
-curl -X POST http://usb-hub.local/api/settings \
-  -H 'Content-Type: application/json' \
-  -d '{"ports":{"auto_power_on_connect":[true,false,true,false,false,false]}}'
+  -d '{"ports":{"power_mode":["boot","connect","connect","manual","manual","manual"]}}'
 
 # Name the ports ("" = no name)
 curl -X POST http://usb-hub.local/api/settings \
@@ -1063,8 +1063,8 @@ curl -X POST http://usb-hub.local/api/settings \
   -d '{"leds":{"brightness":20}}'
 ```
 
-`power_on_boot`, `auto_power_on_connect` and `names` each need all six values,
-port 1 first. Sending one doesn't change the others.
+`power_mode` and `names` each need all six values, port 1 first. Sending one
+doesn't change the other.
 
 ## Python
 
@@ -1119,10 +1119,11 @@ def power_cycle(n, off_seconds=2):
     set_port(n, True)
 
 
-def set_power_on_boot(flags):
-    """Which ports power up at boot: six booleans, port 1 first."""
+def set_power_modes(modes):
+    """Each port's power mode: six of "manual", "boot" or "connect",
+    port 1 first."""
     r = requests.post(f"{HUB}/api/settings",
-                      json={"ports": {"power_on_boot": flags}}, timeout=5)
+                      json={"ports": {"power_mode": modes}}, timeout=5)
     r.raise_for_status()
 
 
@@ -1212,7 +1213,7 @@ const ports = async () => (await api("/api/ports")).ports;
 const port = (n) => api(`/api/ports/${n}`);
 const setPort = (n, on) => api(`/api/port?n=${n}&on=${on ? 1 : 0}`, "POST");
 const setAllPorts = (on) => api(`/api/hub/ports?on=${on ? 1 : 0}`, "POST");
-const setPowerOnBoot = (flags) => api("/api/settings", "POST", { ports: { power_on_boot: flags } });
+const setPowerModes = (modes) => api("/api/settings", "POST", { ports: { power_mode: modes } });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function powerCycle(n, offMs = 2000) {
@@ -1483,7 +1484,7 @@ How the API behaves in firmware 1.0.0. Planned fixes are in
    `/api/settings/schema` returns the WiFi password in clear text.
 3. **Few REST setters.** Apart from `/api/hub/ports`, the writes are the ones
    the web UI uses: `/api/port`, `/api/schedules` and `/api/settings` (which
-   also sets `power_on_boot`). There are no per-port REST setters yet.
+   also sets `power_mode`). There are no per-port REST setters yet.
 4. **No restart endpoint.** Restarting is serial-only (`restart`) — and a
    hostname change only takes effect after a restart.
 5. **Two schedule representations** (string `mode` vs integer `mode` + `on`)

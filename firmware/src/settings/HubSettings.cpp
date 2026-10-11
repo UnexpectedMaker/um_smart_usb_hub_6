@@ -374,10 +374,10 @@ std::vector<HubSettingField> LedsSettings::uiSchema()
 std::vector<HubSettingField> PortsSettings::uiSchema()
 {
     return {
-        {.type = F::T::PortBools, .key = "power_on_boot", .label = "Power on boot",
-         .help = "Ports switched on at startup"},
-        {.type = F::T::PortBools, .key = "auto_power_on_connect", .label = "Auto power on connect",
-         .help = "On when a device is plugged in, off when unplugged"},
+        {.type = F::T::PortBools, .key = "power_mode", .label = "Power on boot",
+         .help = "Ports switched on at startup", .value = "boot"},
+        {.type = F::T::PortBools, .key = "power_mode", .label = "Auto power on connect",
+         .help = "On when a device is plugged in, off when unplugged", .value = "connect"},
     };
 }
 
@@ -407,6 +407,19 @@ static String cleanPortName(const String &in)
 void PortsSettings::fromJson(const nlohmann::json &j)
 {
     HubSettingsT<HubPortsConfig>::fromJson(j);
+
+    // Settings saved by 1.1.0 have power_on_boot instead of power_mode.
+    if (j.is_object() && !j.contains("power_mode") && j.contains("power_on_boot") && j["power_on_boot"].is_array())
+    {
+        const auto &boot = j["power_on_boot"];
+        for (size_t i = 0; i < HUB_NUM_PORTS && i < boot.size(); i++)
+            if (boot[i].is_boolean() && boot[i].get<bool>())
+                _config.power_mode[i] = "boot";
+    }
+    for (auto &mode : _config.power_mode)
+        if (mode != "boot" && mode != "connect")
+            mode = "manual";
+
     for (auto &name : _config.names)
         name = cleanPortName(name);
 }

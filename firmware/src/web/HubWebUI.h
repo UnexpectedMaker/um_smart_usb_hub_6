@@ -402,6 +402,10 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 /* Per-port on/off: six small numbered bool buttons in a row. */
 .port-bools { display:flex; gap:.25rem; }
 .bool-btn.port-bool { min-width:1.9rem; padding:.3rem 0; }
+/* "M" (manual) in the group heading, above each port that's on in no row. */
+.cfg-group h4.has-marks { display:flex; align-items:center; justify-content:space-between; }
+.port-marks { display:flex; gap:.25rem; }
+.port-marks span { width:1.9rem; text-align:center; font-size:calc(.8rem + 1pt); font-weight:600; color:var(--accent); }
 
 .btn { border-radius:6px; padding:.4rem .9rem; font-size:.85rem; font-weight:600;
   border:1px solid var(--border); background:var(--surface); color:var(--text); white-space:nowrap; }
@@ -1143,10 +1147,28 @@ function renderSettings(groups) {
   $('settings-panels').innerHTML = shown.length
     ? shown.map((g) =>
         '<section class="cfg-group" data-group="' + esc(g.name) + '">' +
-          '<h4>' + esc(g.label) + '</h4>' +
+          (hasPortRows(g)
+            ? '<h4 class="has-marks">' + esc(g.label) +
+              '<span class="port-marks">' + '<span></span>'.repeat(6) + '</span></h4>'
+            : '<h4>' + esc(g.label) + '</h4>') +
           (g.fields || []).filter((f) => f.type !== 'hidden').map((f) => cfgRow(g, f)).join('') +
         '</section>').join('')
     : '<p class="sched-empty">No settings.</p>';
+  document.querySelectorAll('.cfg-group').forEach(updatePortMarks);
+}
+
+// True when a group has per-port rows that share a key (one choice per port).
+const hasPortRows = (g) => (g.fields || []).some((f) => f.type === 'port_bools' && f.value);
+
+// Put "M" in the heading above each port that's on in none of the group's
+// rows, blank above the rest.
+function updatePortMarks(sec) {
+  const marks = sec.querySelector('.port-marks');
+  if (!marks) return;
+  const rows = [...sec.querySelectorAll('.port-bools')].filter((r) => r.dataset.value);
+  [...marks.children].forEach((m, i) => {
+    m.textContent = rows.some((r) => r.children[i].dataset.bool === '1') ? '' : 'M';
+  });
 }
 
 // One "name ...... control" line for a field, with its optional hint.
@@ -1169,12 +1191,13 @@ function cfgRow(g, f) {
   } else if (f.type === 'port_bools') {
     // One numbered on/off button per port; the row saves as an array of six.
     const a = Array.isArray(v) ? v : [];
-    ctl = '<span class="port-bools" id="' + id + '" data-key="' + esc(f.key) + '" data-ports="1">' +
+    ctl = '<span class="port-bools" id="' + id + (f.value ? '-' + esc(f.value) : '') + '" data-key="' + esc(f.key) + '"' +
+      ' data-value="' + esc(f.value || '') + '" data-ports="1">' +
       [1, 2, 3, 4, 5, 6].map((n) => {
-        const on = !!a[n - 1];
+        const on = f.value ? a[n - 1] === f.value : !!a[n - 1];
         return '<button type="button" class="bool-btn port-bool' + (on ? ' on' : '') + '"' +
           ' data-bool="' + (on ? 1 : 0) + '" data-on="' + n + '" data-off="' + n + '"' +
-          ' title="Port ' + n + '" onclick="flipBool(this)">' + n + '</button>';
+          ' title="Port ' + n + '" onclick="flipPortBool(this)">' + n + '</button>';
       }).join('') + '</span>';
   } else if (f.type === 'int') {
     ctl = '<input class="cfg-in num" type="number" id="' + id + '" data-key="' + esc(f.key) + '"' +
@@ -1199,6 +1222,21 @@ function flipBool(btn) {
   btn.textContent = on ? btn.dataset.on : btn.dataset.off;
 }
 
+// A per-port button was clicked: flip it. Rows that share a key are one
+// choice per port, so turning a port on turns the same port off in the others.
+function flipPortBool(btn) {
+  flipBool(btn);
+  const row = btn.parentElement;
+  const sec = row.closest('.cfg-group');
+  if (btn.dataset.bool === '1' && row.dataset.value) {
+    const i = [...row.children].indexOf(btn);
+    sec.querySelectorAll('.port-bools').forEach((r) => {
+      if (r !== row && r.dataset.key === row.dataset.key && r.children[i].dataset.bool === '1') flipBool(r.children[i]);
+    });
+  }
+  updatePortMarks(sec);
+}
+
 // Show or hide a password field's text.
 function reveal(id, btn) {
   const el = $(id);
@@ -1214,8 +1252,17 @@ async function saveAllSettings() {
     const out = {};
     sec.querySelectorAll('[data-key]').forEach((el) => {
       const k = el.dataset.key;
-      if (el.dataset.ports !== undefined)
-        out[k] = [...el.querySelectorAll('.port-bool')].map((b) => b.dataset.bool === '1');
+      if (el.dataset.ports !== undefined) {
+        const bools = [...el.querySelectorAll('.port-bool')].map((b) => b.dataset.bool === '1');
+        if (el.dataset.value) {
+          // Rows sharing a key: each port takes the value of the row it's on
+          // in, or "manual" if it's on in none.
+          out[k] = out[k] || bools.map(() => 'manual');
+          bools.forEach((on, i) => { if (on) out[k][i] = el.dataset.value; });
+        } else {
+          out[k] = bools;
+        }
+      }
       else if (el.dataset.bool !== undefined) out[k] = el.dataset.bool === '1';
       else if (el.type === 'number') out[k] = parseFloat(el.value) || 0;
       else out[k] = el.value;
