@@ -23,8 +23,11 @@ void USBPort::begin()
     attachInterruptArg(digitalPinToInterrupt(_sensePin), senseISR, this, CHANGE);
 
     // Enable is active LOW, so start HIGH = port off.
-    ioex.pin_mode(_enExpPin, OUTPUT, HIGH);
-    ioex.pin_mode(_faultExpPin, INPUT);
+    {
+        I2CLock lock;
+        ioex.pin_mode(_enExpPin, OUTPUT, HIGH);
+        ioex.pin_mode(_faultExpPin, INPUT);
+    }
 
     _enabled = false;
     _occupied = (digitalRead(_sensePin) == LOW);
@@ -32,7 +35,10 @@ void USBPort::begin()
 
 void USBPort::setEnabled(bool on)
 {
-    ioex.write(_enExpPin, on ? LOW : HIGH); // active LOW
+    {
+        I2CLock lock;
+        ioex.write(_enExpPin, on ? LOW : HIGH); // active LOW
+    }
     _enabled = on;
 }
 

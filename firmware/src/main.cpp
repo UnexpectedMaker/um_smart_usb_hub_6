@@ -98,6 +98,10 @@ DHT20 aht;
 float g_tempC = 0.0f, g_humid = 0.0f;
 bool g_tempValid = false; // true after the first good read
 
+// The shared I2C bus lock (see I2CLock in ports/USBPort.h). Created first
+// thing in setup(), before any task can use the bus.
+SemaphoreHandle_t g_i2cMutex = nullptr;
+
 // Which optional chips answered at boot. Missing ones are reported as
 // unavailable rather than polled.
 bool g_ahtOk = false;
@@ -132,6 +136,7 @@ void IRAM_ATTR onExpanderInt() { g_expanderIrq = true; }
 // let every port pick out its own fault bit.
 void serviceExpander()
 {
+    I2CLock lock;
     uint8_t reg0 = ioex.read_port(0);
     uint8_t reg1 = ioex.read_port(1);
     for (auto &port : ports)
@@ -157,7 +162,164 @@ PortReading readPort(uint8_t i)
     uint8_t ch = 3 - (i % 3);
     if (!present)
         return {false, 0.0f, 0.0f, 0.0f};
+    I2CLock lock;
     return {true, chip.bus_voltage_V(ch), chip.current_mA(ch), chip.power_mW(ch)};
+}
+
+// Whether the I/O expander answers on the bus.
+bool expanderConnected()
+{
+    I2CLock lock;
+    return ioex.connected();
+}
+
+// ---- Port profiling ----
+// profilerStart() starts a task that samples every powered port at
+// PROFILE_HZ and keeps its last PROFILE_SAMPLES samples in a ring buffer per
+// port. profilerGetPort() returns a port's newest sample, or the average of
+// its newest 2, 4 or 8 (profilerSetAveraging()). The task always samples at
+// PROFILE_HZ; a caller wanting a lower rate calls profilerGetPort() less often.
+#define PROFILE_HZ 100
+#define PROFILE_SAMPLES 8 // room for a 2, 4 or 8 sample average
+
+// One sample: bus volts, milliamps, and milliwatts (V x mA).
+struct ProfileSample
+{
+    float volts, ma, mw;
+};
+
+// One port's ring buffer: head is the next slot to write, count how many
+// slots hold a sample.
+struct ProfileRing
+{
+    ProfileSample samples[PROFILE_SAMPLES];
+    uint8_t head;
+    uint8_t count;
+};
+
+ProfileRing g_profile[NUM_PORTS] = {};
+portMUX_TYPE g_profileMux = portMUX_INITIALIZER_UNLOCKED; // guards g_profile
+TaskHandle_t g_profileTask = nullptr;                     // null when stopped
+volatile bool g_profileStop = false;                      // set by profilerStop()
+volatile uint8_t g_profileAvg = 0;                        // 0 = newest sample only
+
+// The sampling task. Every 1/PROFILE_HZ s it reads V and I from each powered
+// port — two register reads, holding the bus for just that port — and stores
+// them with P = V x I. Unpowered ports aren't read, and their ring is emptied.
+// When asked to stop it checks between cycles, so it never exits holding the
+// bus: it empties every ring, clears its handle and deletes itself.
+void profilerTask(void *)
+{
+    TickType_t wake = xTaskGetTickCount();
+    while (!g_profileStop)
+    {
+        for (uint8_t i = 0; i < NUM_PORTS; i++)
+        {
+            bool present = (i < 3) ? g_inaAok : g_inaBok;
+            if (!ports[i].isEnabled() || !present)
+            {
+                portENTER_CRITICAL(&g_profileMux);
+                g_profile[i].count = 0;
+                portEXIT_CRITICAL(&g_profileMux);
+                continue;
+            }
+
+            // Same chip and channel mapping as readPort().
+            INA3221 &chip = (i < 3) ? ina_a : ina_b;
+            uint8_t ch = 3 - (i % 3);
+            ProfileSample s;
+            {
+                I2CLock lock;
+                s.volts = chip.bus_voltage_V(ch);
+                s.ma = chip.current_mA(ch);
+            }
+            s.mw = s.volts * s.ma;
+
+            portENTER_CRITICAL(&g_profileMux);
+            ProfileRing &r = g_profile[i];
+            r.samples[r.head] = s;
+            r.head = (r.head + 1) % PROFILE_SAMPLES;
+            if (r.count < PROFILE_SAMPLES)
+                r.count++;
+            portEXIT_CRITICAL(&g_profileMux);
+        }
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000 / PROFILE_HZ));
+    }
+
+    portENTER_CRITICAL(&g_profileMux);
+    for (auto &r : g_profile)
+        r.head = r.count = 0;
+    portEXIT_CRITICAL(&g_profileMux);
+    g_profileTask = nullptr;
+    vTaskDelete(nullptr);
+}
+
+// Start the profiling task. Does nothing if it's already running.
+void profilerStart()
+{
+    if (g_profileTask)
+        return;
+    g_profileStop = false;
+    // Priority 2, above loop(), so samples stay on time.
+    xTaskCreatePinnedToCore(profilerTask, "profiler", 4096, nullptr, 2, &g_profileTask, 1);
+}
+
+// Stop the profiling task and wait (at most one cycle, 1/PROFILE_HZ s) until
+// it has finished. Afterwards profilerGetPort() returns {0, 0, 0} for every
+// port. Does nothing if it isn't running.
+void profilerStop()
+{
+    if (!g_profileTask)
+        return;
+    g_profileStop = true;
+    while (g_profileTask)
+        vTaskDelay(1);
+}
+
+// How many samples profilerGetPort() averages: 0 (newest sample only), 2, 4
+// or 8. Returns false, changing nothing, for any other value.
+bool profilerSetAveraging(int samples)
+{
+    if (samples != 0 && samples != 2 && samples != 4 && samples != 8)
+        return false;
+    g_profileAvg = samples;
+    return true;
+}
+
+// Port i's (0-5) newest sample, or the average of its newest 2, 4 or 8 as set
+// by profilerSetAveraging() — fewer if the port hasn't been on long enough to
+// fill them. {0, 0, 0} if the port is off, has no monitor, or hasn't been
+// sampled yet.
+ProfileSample profilerGetPort(int i)
+{
+    ProfileSample out = {0.0f, 0.0f, 0.0f};
+    if (i < 0 || i >= NUM_PORTS || !ports[i].isEnabled())
+        return out;
+
+    // Copy the newest samples out under the lock, then average them outside it.
+    uint8_t want = g_profileAvg ? g_profileAvg : 1;
+    ProfileSample newest[PROFILE_SAMPLES];
+    uint8_t n;
+    portENTER_CRITICAL(&g_profileMux);
+    const ProfileRing &r = g_profile[i];
+    n = (r.count < want) ? r.count : want;
+    for (uint8_t k = 0; k < n; k++)
+        newest[k] = r.samples[(r.head + PROFILE_SAMPLES - 1 - k) % PROFILE_SAMPLES];
+    portEXIT_CRITICAL(&g_profileMux);
+
+    for (uint8_t k = 0; k < n; k++)
+    {
+        out.volts += newest[k].volts;
+        out.ma += newest[k].ma;
+        out.mw += newest[k].mw;
+    }
+    if (n)
+    {
+        out.volts /= n;
+        out.ma /= n;
+        out.mw /= n;
+    }
+    return out;
 }
 
 // Total current and power across all monitored ports.
@@ -755,8 +917,8 @@ String scheduleEntriesJson(uint8_t i)
     return j + "]";
 }
 
-// One port for the REST API. `detail` adds power_on_boot and the full list of
-// schedule entries.
+// One port for the REST API. `detail` adds power_on_boot,
+// auto_power_on_connect and the full list of schedule entries.
 String portJson(uint8_t i, bool detail)
 {
     USBPort &port = ports[i];
@@ -772,7 +934,10 @@ String portJson(uint8_t i, bool detail)
     j += ",\"ma\":" + String(r.ma, 1);
     j += ",\"mw\":" + String(r.mw, 1);
     if (detail)
+    {
         j += ",\"power_on_boot\":" + String(jb(g_ports.config().power_on_boot[i]));
+        j += ",\"auto_power_on_connect\":" + String(jb(g_ports.config().auto_power_on_connect[i]));
+    }
     j += ",\"schedule\":{\"count\":" + String(liveScheduleCount(i));
     j += ",\"next\":" + nextJson(i);
     if (detail)
@@ -838,7 +1003,7 @@ String apiHubJson()
     j += ",\"ssid\":\"" + jsonEsc(g_wifi.config().ssid) + "\"";
     j += ",\"rssi\":" + String(up ? WiFi.RSSI() : 0);
     j += ",\"hostname\":\"" + g_device.hostname() + "\"}";
-    j += ",\"devices\":{\"expander\":" + String(jb(ioex.connected()));
+    j += ",\"devices\":{\"expander\":" + String(jb(expanderConnected()));
     j += ",\"ina_1\":" + String(jb(g_inaAok));
     j += ",\"ina_2\":" + String(jb(g_inaBok));
     j += ",\"aht20\":" + String(jb(g_ahtOk)) + "}";
@@ -1050,7 +1215,7 @@ void printInfo()
     Serial.printf("upstream 5V: %s\r\n", upstream5vPresent() ? "present" : "ABSENT");
 
     Serial.println("-- devices ------------------------------------------------");
-    Serial.printf("expander   : %s\r\n", ioex.connected() ? "ok" : "NOT RESPONDING");
+    Serial.printf("expander   : %s\r\n", expanderConnected() ? "ok" : "NOT RESPONDING");
     Serial.printf("ina3221 #1 : %s (ports 1-3)\r\n", g_inaAok ? "ok" : "not found");
     Serial.printf("ina3221 #2 : %s (ports 4-6)\r\n", g_inaBok ? "ok" : "not found");
     if (g_ahtOk)
@@ -1229,6 +1394,8 @@ void processSerial()
 
 void setup()
 {
+    g_i2cMutex = xSemaphoreCreateRecursiveMutex();
+
     Serial.begin(115200);
     // Reported first: the reset reason survives the reset, so this shows a
     // brownout or crash even when a restart loop is too quick to catch.
@@ -1334,9 +1501,18 @@ void loop()
         g_expanderIrq = false;
         serviceExpander();
     }
-    for (auto &port : ports)
-        if (port.senseDirty())
-            port.serviceSense();
+    // A plug or unplug on a port set to auto power on connect switches its
+    // power to match.
+    for (uint8_t i = 0; i < NUM_PORTS; i++)
+    {
+        USBPort &port = ports[i];
+        if (port.senseDirty() && port.serviceSense() && g_ports.config().auto_power_on_connect[i])
+        {
+            port.setEnabled(port.isOccupied());
+            Serial.printf("[port] %u device %s — auto power %s\r\n", i + 1,
+                          port.isOccupied() ? "connected" : "removed", port.isOccupied() ? "on" : "off");
+        }
+    }
 
     // ---- settings groups (location lookup) and scheduler ----
     HubRegistry::dispatchLoop();
@@ -1358,11 +1534,22 @@ void loop()
     serviceSchedules();
 
     // ---- temperature: every 2 s (the sensor needs >= 1 s between reads) ----
+    // Start a measurement, then collect it 100 ms later (it takes ~80 ms).
+    // Split in two so the bus is only held for each short transfer, never
+    // while the sensor is measuring.
     static uint32_t lastTemp = 0;
-    if (g_ahtOk && millis() - lastTemp >= 2000)
+    static bool ahtMeasuring = false;
+    if (g_ahtOk && !ahtMeasuring && millis() - lastTemp >= 2000)
     {
         lastTemp = millis();
-        if (aht.read() == DHT20_OK)
+        I2CLock lock;
+        ahtMeasuring = (aht.requestData() == 0);
+    }
+    else if (ahtMeasuring && millis() - lastTemp >= 100)
+    {
+        ahtMeasuring = false;
+        I2CLock lock;
+        if (aht.readData() > 0 && aht.convert() == DHT20_OK)
         {
             g_tempC = aht.getTemperature();
             g_humid = aht.getHumidity();

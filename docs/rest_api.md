@@ -56,6 +56,7 @@ temperature, total current draw and more.
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
 | Choose which ports power up at boot | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_on_boot":[...]}}` |
+| Power ports on when a device is plugged in (and off when unplugged) | [`POST /api/settings`](#post-apisettings) with `{"ports":{"auto_power_on_connect":[...]}}` |
 | Name the ports | [`POST /api/settings`](#post-apisettings) with `{"ports":{"names":[...]}}` |
 | Change any other setting | [`POST /api/settings`](#post-apisettings) |
 | Replace the schedules | [`POST /api/schedules`](#post-apischedules) |
@@ -360,8 +361,8 @@ curl http://192.168.1.100/api/ports
 
 ## GET `/api/ports/{n}`
 
-One port: everything from `/api/ports`, **plus** `power_on_boot` and the full
-schedule entry list.
+One port: everything from `/api/ports`, **plus** `power_on_boot`,
+`auto_power_on_connect` and the full schedule entry list.
 
 ```
 curl http://192.168.1.100/api/ports/6
@@ -380,6 +381,7 @@ curl http://192.168.1.100/api/ports/6
   "ma": 120.4,
   "mw": 607.9,
   "power_on_boot": false,
+  "auto_power_on_connect": false,
   "schedule": {
     "count": 2,
     "next": { "in_s": 82, "on": false, "at": "Sun 16:35", "entry": 0 },
@@ -429,6 +431,7 @@ A port with no schedule:
   "ma": 0.0,
   "mw": 0.0,
   "power_on_boot": false,
+  "auto_power_on_connect": false,
   "schedule": { "count": 0, "next": null, "entries": [] }
 }
 ```
@@ -728,9 +731,15 @@ curl http://192.168.1.100/api/settings/schema
       "label": "Ports",
       "values": {
         "power_on_boot": [false, false, false, false, false, true],
+        "auto_power_on_connect": [false, false, false, false, false, false],
         "names": ["", "", "", "", "", "Raspberry Pi"]
       },
-      "fields": []
+      "fields": [
+        { "type": "port_bools", "key": "power_on_boot", "label": "Power on boot",
+          "help": "Ports switched on at startup" },
+        { "type": "port_bools", "key": "auto_power_on_connect", "label": "Auto power on connect",
+          "help": "On when a device is plugged in, off when unplugged" }
+      ]
     }
   ]
 }
@@ -740,7 +749,9 @@ curl http://192.168.1.100/api/settings/schema
 
 - **`values.password` is returned in clear text.** Anything on the LAN can read
   the WiFi password from this endpoint.
-- Field `type` is one of `bool`, `int`, `string`.
+- Field `type` is one of `bool`, `int`, `string`, `port_bools`. A `port_bools`
+  value is an array of six booleans, port 1 first, shown as one numbered
+  on/off button per port.
 - `min`/`max`/`step` appear only on `int` fields.
 - `help` is an optional one-line hint shown under the field.
 - Group order follows registration order and is **not guaranteed stable** — key
@@ -1036,6 +1047,11 @@ curl -X POST http://usb-hub.local/api/settings \
   -H 'Content-Type: application/json' \
   -d '{"ports":{"power_on_boot":[true,true,false,false,false,false]}}'
 
+# Ports 1 and 3 power on when a device is plugged in, off when it's unplugged
+curl -X POST http://usb-hub.local/api/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"ports":{"auto_power_on_connect":[true,false,true,false,false,false]}}'
+
 # Name the ports ("" = no name)
 curl -X POST http://usb-hub.local/api/settings \
   -H 'Content-Type: application/json' \
@@ -1047,8 +1063,8 @@ curl -X POST http://usb-hub.local/api/settings \
   -d '{"leds":{"brightness":20}}'
 ```
 
-`power_on_boot` and `names` each need all six values, port 1 first. Sending
-one doesn't change the other.
+`power_on_boot`, `auto_power_on_connect` and `names` each need all six values,
+port 1 first. Sending one doesn't change the others.
 
 ## Python
 

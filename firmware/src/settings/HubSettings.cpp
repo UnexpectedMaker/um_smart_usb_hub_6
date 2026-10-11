@@ -371,6 +371,16 @@ std::vector<HubSettingField> LedsSettings::uiSchema()
 // ports
 // ===========================================================================
 
+std::vector<HubSettingField> PortsSettings::uiSchema()
+{
+    return {
+        {.type = F::T::PortBools, .key = "power_on_boot", .label = "Power on boot",
+         .help = "Ports switched on at startup"},
+        {.type = F::T::PortBools, .key = "auto_power_on_connect", .label = "Auto power on connect",
+         .help = "On when a device is plugged in, off when unplugged"},
+    };
+}
+
 // A port name as stored: control characters (tabs, newlines...) turned into
 // spaces, surrounding spaces trimmed, at most PORT_NAME_MAX characters. Counts
 // UTF-8 characters rather than bytes, so a multi-byte character is never cut

@@ -52,9 +52,10 @@ struct HubSettingField
 {
     enum class T
     {
-        Bool,   // on/off button
-        Int,    // number box, bounded by min/max, stepping by step
-        String  // text box (masked automatically if the key looks secret)
+        Bool,      // on/off button
+        Int,       // number box, bounded by min/max, stepping by step
+        String,    // text box (masked automatically if the key looks secret)
+        PortBools  // one on/off button per port, numbered 1-6 (a bool array)
     };
     T type;
     const char *key;            // JSON key inside the group's config
@@ -301,8 +302,9 @@ public:
 extern LedsSettings g_leds;
 
 // ===========================================================================
-// ports — the power state each port comes up in at boot. All off by default.
-// Set through the API, not the Settings drawer.
+// ports — per-port options: power on at boot, auto power on connect, and the
+// port names. Power options are set in the Settings drawer; names on the port
+// cards.
 // ===========================================================================
 // Longest port name, in characters (not bytes).
 #define PORT_NAME_MAX 24
@@ -310,15 +312,18 @@ extern LedsSettings g_leds;
 struct HubPortsConfig
 {
     std::array<bool, HUB_NUM_PORTS> power_on_boot{{false, false, false, false, false, false}};
+    // On: plugging a device in powers the port on, unplugging powers it off.
+    std::array<bool, HUB_NUM_PORTS> auto_power_on_connect{{false, false, false, false, false, false}};
     std::array<String, HUB_NUM_PORTS> names; // "" = unnamed
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot, names);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_on_boot, auto_power_on_connect, names);
 
 class PortsSettings : public HubSettingsT<HubPortsConfig>
 {
 public:
     const char *name() const override { return "ports"; }
     const char *label() const override { return "Ports"; }
+    std::vector<HubSettingField> uiSchema() override;
 
     // Loads as usual, then tidies every name: control characters turned into
     // spaces, surrounding spaces trimmed, cut to PORT_NAME_MAX characters.

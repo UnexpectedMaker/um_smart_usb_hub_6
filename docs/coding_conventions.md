@@ -80,10 +80,34 @@ file is for:
 
 ## Hardware and timing
 
-- Interrupt handlers only set a flag. All I2C and other real work happens in
-  `loop()`.
+- Interrupt handlers only set a flag. The real work happens in task code.
 - Nothing blocks boot or the main loop waiting for the network. WiFi, the web
   server and NTP all come up in the background.
+
+## I2C bus
+
+The expander, both INA3221s and the AHT20 share one I2C bus, used from more
+than one task (`loop()`, the web server, the [port profiler](profiler.md)).
+Every I2C access holds the bus lock, `I2CLock` (`ports/USBPort.h`), for the
+whole transaction.
+
+`I2CLock` is a scope guard around a recursive FreeRTOS mutex. Declaring it
+takes the mutex, waiting if another task has it. The mutex is released
+automatically when the block it was declared in ends — at the closing `}`, or
+on any `return` out of the block:
+
+```cpp
+{
+    I2CLock lock;          // takes the mutex
+    ioex.write(pin, LOW);  // bus is ours
+}                          // block ends: mutex released
+```
+
+- Lock in the function that does the I2C transfer, around just the transfer.
+- Never put a delay or a busy-poll inside the locked block. Split a slow
+  device read into "start" and "collect" steps, each locked on its own (see the
+  AHT20 read in `loop()`).
+- Recursive: a locked function can call another that also locks.
 
 ## Serial output
 

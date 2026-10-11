@@ -21,6 +21,18 @@
 // and applyFault().
 #pragma once
 #include <Arduino.h>
+#include <freertos/semphr.h>
+
+// The shared I2C bus lock, created at the start of setup() in main.cpp.
+// Wire's own lock covers a transfer but not reading the bytes back out of its
+// buffer, so hold an I2CLock for the whole of every device read or write.
+// Recursive: a locked section can call another.
+extern SemaphoreHandle_t g_i2cMutex;
+struct I2CLock
+{
+    I2CLock() { xSemaphoreTakeRecursive(g_i2cMutex, portMAX_DELAY); }
+    ~I2CLock() { xSemaphoreGiveRecursive(g_i2cMutex); }
+};
 
 class USBPort
 {

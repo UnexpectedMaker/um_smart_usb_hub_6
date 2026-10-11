@@ -21,6 +21,7 @@ static const char *fieldTypeStr(HubSettingField::T t)
     {
     case HubSettingField::T::Bool: return "bool";
     case HubSettingField::T::Int:  return "int";
+    case HubSettingField::T::PortBools: return "port_bools";
     default:                       return "string";
     }
 }

@@ -399,6 +399,9 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
   background:transparent; border:1px solid var(--accent); color:var(--accent);
   transition:background-color .15s, color .15s; }
 .bool-btn.on { background:var(--accent); color:var(--accent-on); }
+/* Per-port on/off: six small numbered bool buttons in a row. */
+.port-bools { display:flex; gap:.25rem; }
+.bool-btn.port-bool { min-width:1.9rem; padding:.3rem 0; }
 
 .btn { border-radius:6px; padding:.4rem .9rem; font-size:.85rem; font-weight:600;
   border:1px solid var(--border); background:var(--surface); color:var(--text); white-space:nowrap; }
@@ -1163,6 +1166,16 @@ function cfgRow(g, f) {
       ' data-key="' + esc(f.key) + '" data-bool="' + (on ? 1 : 0) + '"' +
       ' data-on="' + lOn + '" data-off="' + lOff + '" onclick="flipBool(this)">' +
       (on ? lOn : lOff) + '</button>';
+  } else if (f.type === 'port_bools') {
+    // One numbered on/off button per port; the row saves as an array of six.
+    const a = Array.isArray(v) ? v : [];
+    ctl = '<span class="port-bools" id="' + id + '" data-key="' + esc(f.key) + '" data-ports="1">' +
+      [1, 2, 3, 4, 5, 6].map((n) => {
+        const on = !!a[n - 1];
+        return '<button type="button" class="bool-btn port-bool' + (on ? ' on' : '') + '"' +
+          ' data-bool="' + (on ? 1 : 0) + '" data-on="' + n + '" data-off="' + n + '"' +
+          ' title="Port ' + n + '" onclick="flipBool(this)">' + n + '</button>';
+      }).join('') + '</span>';
   } else if (f.type === 'int') {
     ctl = '<input class="cfg-in num" type="number" id="' + id + '" data-key="' + esc(f.key) + '"' +
       ' value="' + (v != null ? v : 0) + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '">';
@@ -1201,7 +1214,9 @@ async function saveAllSettings() {
     const out = {};
     sec.querySelectorAll('[data-key]').forEach((el) => {
       const k = el.dataset.key;
-      if (el.dataset.bool !== undefined) out[k] = el.dataset.bool === '1';
+      if (el.dataset.ports !== undefined)
+        out[k] = [...el.querySelectorAll('.port-bool')].map((b) => b.dataset.bool === '1');
+      else if (el.dataset.bool !== undefined) out[k] = el.dataset.bool === '1';
       else if (el.type === 'number') out[k] = parseFloat(el.value) || 0;
       else out[k] = el.value;
     });
