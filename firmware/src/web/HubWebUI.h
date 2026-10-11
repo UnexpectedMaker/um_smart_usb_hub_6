@@ -1143,7 +1143,9 @@ const isSecret = (k) => /pass|secret|api_key|token/i.test(k);
 // One section per settings group.
 function renderSettings(groups) {
   // Groups with nothing editable would be empty headings — leave them out.
-  const shown = groups.filter((g) => (g.fields || []).length);
+  // Ports goes first; the rest keep the hub's order.
+  const shown = groups.filter((g) => (g.fields || []).length)
+    .sort((a, b) => (b.name === 'ports') - (a.name === 'ports'));
   $('settings-panels').innerHTML = shown.length
     ? shown.map((g) =>
         '<section class="cfg-group" data-group="' + esc(g.name) + '">' +
