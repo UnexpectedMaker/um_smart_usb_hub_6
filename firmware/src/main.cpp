@@ -844,7 +844,7 @@ String buildStatusJson()
         j += ",\"state\":\"" + String(portStateStr(port)) + "\"";
         j += ",\"name\":\"" + jsonEsc(g_ports.config().names[i]) + "\"";
         j += ",\"mon\":" + String(jb(r.ok));
-        j += ",\"v\":" + String(r.volts, 2);
+        j += ",\"v\":" + String(r.volts, 3);
         j += ",\"ma\":" + String(r.ma, 1);
         j += ",\"mw\":" + String(r.mw, 1);
         j += ",\"sched\":" + String(liveScheduleCount(i));
@@ -930,7 +930,7 @@ String portJson(uint8_t i, bool detail)
     j += ",\"state\":\"" + String(portStateStr(port)) + "\"";
     j += ",\"name\":\"" + jsonEsc(g_ports.config().names[i]) + "\"";
     j += ",\"monitor\":" + String(jb(r.ok));
-    j += ",\"volts\":" + String(r.volts, 2);
+    j += ",\"volts\":" + String(r.volts, 3);
     j += ",\"ma\":" + String(r.ma, 1);
     j += ",\"mw\":" + String(r.mw, 1);
     if (detail)
@@ -1235,7 +1235,7 @@ void printInfo()
         char volts[12] = "--", amps[16] = "--", watts[16] = "--";
         if (r.ok)
         {
-            snprintf(volts, sizeof(volts), "%.2fV", r.volts);
+            snprintf(volts, sizeof(volts), "%.3fV", r.volts);
             snprintf(amps, sizeof(amps), "%.1fmA", r.ma);
             snprintf(watts, sizeof(watts), "%.1fmW", r.mw);
         }

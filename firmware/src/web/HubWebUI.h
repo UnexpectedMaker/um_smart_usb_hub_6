@@ -1376,9 +1376,9 @@ function updatePort(p) {
   c.querySelector('.port-toggle').className = 'port-toggle' + (p.enabled ? ' on' : '');
 
   const mon = p.mon !== false;      // false = this port's power monitor isn't fitted
-  c.querySelector('.mma').textContent = mon ? p.ma.toFixed(0) : '--';
-  c.querySelector('.mv').textContent  = mon ? p.v.toFixed(2) + ' V' : '-- V';
-  c.querySelector('.mmw').textContent = mon ? p.mw.toFixed(0) + ' mW' : '-- mW';
+  c.querySelector('.mma').textContent = mon ? p.ma.toFixed(1) : '--';
+  c.querySelector('.mv').textContent  = mon ? p.v.toFixed(3) + ' V' : '-- V';
+  c.querySelector('.mmw').textContent = mon ? p.mw.toFixed(1) + ' mW' : '-- mW';
 
   // Next scheduled change, readable without opening the port.
   const s = c.querySelector('.sock-sched');
@@ -1417,8 +1417,8 @@ function applyStatus(d) {
   $('s-maxblk').textContent = d.maxblk ? Math.round(d.maxblk/1024) + ' KB' : '--';
   if (d.total) {
     const a = d.total.ma, w = d.total.mw;
-    $('s-total').textContent = (a >= 1000 ? (a/1000).toFixed(2) + ' A' : Math.round(a) + ' mA') +
-                               ' / ' + (w >= 1000 ? (w/1000).toFixed(2) + ' W' : Math.round(w) + ' mW');
+    $('s-total').textContent = (a >= 1000 ? (a/1000).toFixed(4) + ' A' : a.toFixed(1) + ' mA') +
+                               ' / ' + (w >= 1000 ? (w/1000).toFixed(4) + ' W' : w.toFixed(1) + ' mW');
   }
   if (d.clock) {
     lastClock = d.clock;

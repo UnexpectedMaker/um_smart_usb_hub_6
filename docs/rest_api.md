@@ -73,7 +73,7 @@ temperature, total current draw and more.
 - **No authentication.** The API is open to anyone on the LAN.
 - **Time** is device-local, resolved from the `location` UTC offset + NTP.
   All schedule times are local, 24-hour `"HH:MM"`.
-- Floats are emitted with fixed precision: volts 2 dp, mA/mW 1 dp, temperature
+- Floats are emitted with fixed precision: volts 3 dp, mA/mW 1 dp, temperature
   and humidity 1 dp.
 
 ### Status codes
@@ -247,7 +247,7 @@ curl http://192.168.1.100/api/ports
       "state": "off",
       "name": "",
       "monitor": true,
-      "volts": 0.00,
+      "volts": 0.000,
       "ma": 0.0,
       "mw": 0.0,
       "schedule": { "count": 0, "next": null }
@@ -260,7 +260,7 @@ curl http://192.168.1.100/api/ports
       "state": "pulse",
       "name": "",
       "monitor": true,
-      "volts": 5.07,
+      "volts": 5.072,
       "ma": 0.4,
       "mw": 2.0,
       "schedule": { "count": 0, "next": null }
@@ -273,7 +273,7 @@ curl http://192.168.1.100/api/ports
       "state": "fault",
       "name": "",
       "monitor": true,
-      "volts": 4.61,
+      "volts": 4.608,
       "ma": 1980.2,
       "mw": 9129.1,
       "schedule": { "count": 0, "next": null }
@@ -286,7 +286,7 @@ curl http://192.168.1.100/api/ports
       "state": "blue",
       "name": "",
       "monitor": false,
-      "volts": 0.00,
+      "volts": 0.000,
       "ma": 0.0,
       "mw": 0.0,
       "schedule": { "count": 0, "next": null }
@@ -299,7 +299,7 @@ curl http://192.168.1.100/api/ports
       "state": "pinkpulse",
       "name": "",
       "monitor": true,
-      "volts": 0.02,
+      "volts": 0.024,
       "ma": 0.0,
       "mw": 0.0,
       "schedule": {
@@ -315,7 +315,7 @@ curl http://192.168.1.100/api/ports
       "state": "green",
       "name": "Raspberry Pi",
       "monitor": true,
-      "volts": 5.05,
+      "volts": 5.048,
       "ma": 120.4,
       "mw": 607.9,
       "schedule": {
@@ -376,7 +376,7 @@ curl http://192.168.1.100/api/ports/6
   "state": "green",
   "name": "Raspberry Pi",
   "monitor": true,
-  "volts": 5.05,
+  "volts": 5.048,
   "ma": 120.4,
   "mw": 607.9,
   "power_mode": "manual",
@@ -425,7 +425,7 @@ A port with no schedule:
   "state": "off",
   "name": "",
   "monitor": true,
-  "volts": 0.00,
+  "volts": 0.000,
   "ma": 0.0,
   "mw": 0.0,
   "power_mode": "manual",
@@ -523,29 +523,29 @@ curl http://192.168.1.100/api/status
   "ports": [
     {
       "n": 1, "enabled": false, "occupied": false, "fault": false,
-      "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
+      "state": "off", "name": "", "mon": true, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0
     },
     {
       "n": 2, "enabled": true, "occupied": false, "fault": false,
-      "state": "pulse", "name": "", "mon": true, "v": 5.07, "ma": 0.4, "mw": 2.0, "sched": 0
+      "state": "pulse", "name": "", "mon": true, "v": 5.072, "ma": 0.4, "mw": 2.0, "sched": 0
     },
     {
       "n": 3, "enabled": true, "occupied": true, "fault": true,
-      "state": "fault", "name": "", "mon": true, "v": 4.61, "ma": 1980.2, "mw": 9129.1, "sched": 0
+      "state": "fault", "name": "", "mon": true, "v": 4.608, "ma": 1980.2, "mw": 9129.1, "sched": 0
     },
     {
       "n": 4, "enabled": false, "occupied": true, "fault": false,
-      "state": "blue", "name": "", "mon": false, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0
+      "state": "blue", "name": "", "mon": false, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0
     },
     {
       "n": 5, "enabled": true, "occupied": false, "fault": false,
-      "state": "pinkpulse", "name": "", "mon": true, "v": 0.02, "ma": 0.0, "mw": 0.0,
+      "state": "pinkpulse", "name": "", "mon": true, "v": 0.024, "ma": 0.0, "mw": 0.0,
       "sched": 1,
       "next": { "in": 3542, "on": false, "at": "Sun 17:30", "i": 0 }
     },
     {
       "n": 6, "enabled": true, "occupied": true, "fault": false,
-      "state": "green", "name": "Raspberry Pi", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9,
+      "state": "green", "name": "Raspberry Pi", "mon": true, "v": 5.048, "ma": 120.4, "mw": 607.9,
       "sched": 2,
       "next": { "in": 82, "on": false, "at": "Sun 16:35", "i": 0 }
     }
@@ -794,12 +794,12 @@ caller sees real device state rather than assuming success:
   "temp": { "valid": true, "c": 30.8, "h": 29.6 },
   "clock": { "synced": true, "time": "16:33", "date": "Sun 02 Aug 2026", "wday": 0, "secs": 59621 },
   "ports": [
-    { "n": 1, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 2, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 3, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 4, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 5, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.00, "ma": 0.0, "mw": 0.0, "sched": 0 },
-    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "name": "Raspberry Pi", "mon": true, "v": 5.05, "ma": 120.4, "mw": 607.9, "sched": 0 }
+    { "n": 1, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 2, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 3, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 4, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 5, "enabled": false, "occupied": false, "fault": false, "state": "off", "name": "", "mon": true, "v": 0.000, "ma": 0.0, "mw": 0.0, "sched": 0 },
+    { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "name": "Raspberry Pi", "mon": true, "v": 5.048, "ma": 120.4, "mw": 607.9, "sched": 0 }
   ],
   "total": { "ma": 120.4, "mw": 607.9 }
 }
@@ -830,22 +830,22 @@ curl -X POST 'http://192.168.1.100/api/hub/ports?on=0'      # everything off
 {
   "ports": [
     { "n": 1, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
-      "monitor": true, "volts": 5.07, "ma": 0.4, "mw": 2.0,
+      "monitor": true, "volts": 5.072, "ma": 0.4, "mw": 2.0,
       "schedule": { "count": 0, "next": null } },
     { "n": 2, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
-      "monitor": true, "volts": 5.07, "ma": 0.3, "mw": 1.5,
+      "monitor": true, "volts": 5.072, "ma": 0.3, "mw": 1.5,
       "schedule": { "count": 0, "next": null } },
     { "n": 3, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
-      "monitor": true, "volts": 5.06, "ma": 0.4, "mw": 2.0,
+      "monitor": true, "volts": 5.056, "ma": 0.4, "mw": 2.0,
       "schedule": { "count": 0, "next": null } },
     { "n": 4, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
-      "monitor": true, "volts": 5.07, "ma": 0.3, "mw": 1.5,
+      "monitor": true, "volts": 5.072, "ma": 0.3, "mw": 1.5,
       "schedule": { "count": 0, "next": null } },
     { "n": 5, "enabled": true, "occupied": false, "fault": false, "state": "pulse", "name": "",
-      "monitor": true, "volts": 5.06, "ma": 0.4, "mw": 2.0,
+      "monitor": true, "volts": 5.056, "ma": 0.4, "mw": 2.0,
       "schedule": { "count": 0, "next": null } },
     { "n": 6, "enabled": true, "occupied": true, "fault": false, "state": "green", "name": "Raspberry Pi",
-      "monitor": true, "volts": 5.05, "ma": 120.4, "mw": 607.9,
+      "monitor": true, "volts": 5.048, "ma": 120.4, "mw": 607.9,
       "schedule": { "count": 2,
         "next": { "in_s": 82, "on": false, "at": "Sun 16:35", "entry": 0 } } }
   ]
@@ -1146,7 +1146,7 @@ if __name__ == "__main__":
         power = "ON " if p["enabled"] else "off"
         device = "device" if p["occupied"] else "empty"
         fault = "  FAULT" if p["fault"] else ""
-        reading = f"{p['volts']:.2f} V  {p['ma']:6.1f} mA" if p["monitor"] else "no monitor"
+        reading = f"{p['volts']:.3f} V  {p['ma']:6.1f} mA" if p["monitor"] else "no monitor"
         print(f"port {p['n']}: {power}  {device:6}  {reading}{fault}")
 ```
 
@@ -1161,7 +1161,7 @@ def log_power(n, seconds=30, interval=0.5):
     end = time.time() + seconds
     while time.time() < end:
         p = port(n)
-        print(f"{time.strftime('%H:%M:%S')}  {p['volts']:5.2f} V  "
+        print(f"{time.strftime('%H:%M:%S')}  {p['volts']:5.3f} V  "
               f"{p['ma']:7.1f} mA  {p['mw']:7.1f} mW")
         time.sleep(interval)
 
@@ -1226,7 +1226,7 @@ const hub = await hubStatus();
 console.log(`${hub.name}  firmware ${hub.fw}  ${hub.sensors.temp_c} °C  ${hub.power.total_ma} mA total`);
 
 for (const p of await ports()) {
-  const reading = p.monitor ? `${p.volts.toFixed(2)} V  ${p.ma.toFixed(1)} mA` : "no monitor";
+  const reading = p.monitor ? `${p.volts.toFixed(3)} V  ${p.ma.toFixed(1)} mA` : "no monitor";
   console.log(`port ${p.n}: ${p.enabled ? "ON " : "off"}  ${p.occupied ? "device" : "empty "}  ${reading}${p.fault ? "  FAULT" : ""}`);
 }
 
