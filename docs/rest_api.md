@@ -113,6 +113,8 @@ apply nothing. See *Current limitations*.
 | `GET` | `/api/ports/{n}` | One port in detail, including its schedule |
 | `GET` | `/api/ports/{n}/schedule` | One port's schedule |
 | `GET` | `/api/status` | Combined payload backing the web UI |
+| `GET` | `/api/history` | PSRAM-backed port trend samples for the web UI |
+| `GET` | `/api/environment/history` | PSRAM-backed temperature/humidity trend samples for the web UI |
 | `GET` | `/api/schedules` | All six ports' schedules |
 | `GET` | `/api/settings/schema` | Settings structure + current values |
 | `POST` | `/api/port?n=&on=` | Switch one port |
@@ -506,6 +508,16 @@ curl http://192.168.1.100/api/status
   "fw": "1.0.0",
   "rst": "POWERON",
   "theme": "dark",
+  "ui": {
+    "mini_graphs": true,
+    "mini_metric": "ma",
+    "graph_metric": "volts,ma,mw",
+    "graph_hz": 10,
+    "graph_window": 10,
+    "graph_scale": "linear",
+    "graph_voltage_zero": false,
+    "graph_y_lock": false
+  },
   "ip": "192.168.1.100",
   "uptime_s": 838,
   "heap": 209800,
@@ -567,6 +579,113 @@ curl http://192.168.1.100/api/status
 | `temp.c`, `temp.h` | `sensors.temp_c`, `sensors.humidity` |
 | `main5v`, `upstream5v` | `power.main_5v`, `power.upstream_5v` |
 | `theme` (UI only) | — |
+| `ui` (hidden UI preferences) | — |
+
+---
+
+## GET `/api/history`
+
+Port trend samples for the web UI's graph, read from PSRAM history captured
+from the profiler cache. Voltage and current are stored; power is calculated
+from those values when the history response is built. Capture is attempted at
+100 Hz, then retained in three fixed tiers per port:
+
+| Tier | Retained window |
+|---|---|
+| `100 Hz` | `10 min` |
+| `10 Hz` | `20 min` |
+| `1 Hz` | `16 h` |
+
+```
+curl 'http://192.168.1.100/api/history?port=6&hz=10&window=60'
+```
+
+Parameters:
+
+| Param | Values | Default |
+|---|---|---|
+| `port` | `1..6`, or `all` for all ports | `1` |
+| `hz` | `100`, `10`, `1` | `10` |
+| `window` | seconds, clamped to the selected tier | `10` |
+| `offset` | seconds back from the live head, clamped to the data currently stored | `0` |
+| `abs` | `1` to return absolute `millis()` timestamps | relative offsets |
+| `since` | optional absolute `millis()` timestamp; only newer points are returned | full window |
+
+The response is compact for the browser: each point is
+`[ms_from_now, volts, ma, mw]` by default, or `[ms, volts, ma, mw]` when
+`abs=1` is supplied.
+
+```json
+{
+  "ok": true,
+  "port": 6,
+  "hz": 10,
+  "capture_hz": 100,
+  "stored_hz": 10,
+  "window_s": 60,
+  "max_window_s": 1200,
+  "available_s": 420,
+  "tiers": [
+    { "hz": 100, "max_window_s": 600, "available_s": 600 },
+    { "hz": 10, "max_window_s": 1200, "available_s": 420 },
+    { "hz": 1, "max_window_s": 57600, "available_s": 420 }
+  ],
+  "offset_s": 0,
+  "now_ms": 12345678,
+  "time": "relative",
+  "points": [
+    [-9900, 5.051, 118.3, 597.5],
+    [-9800, 5.050, 119.0, 601.0]
+  ]
+}
+```
+
+When `port=all`, the response reports `"port":"all"` and uses a `ports` array,
+each with its own `points` array in the same point format.
+
+`max_window_s` is the selected tier's full PSRAM capacity; `available_s` is the
+portion currently populated for that port. `tiers` gives the same lightweight
+fill summary for each retained tier without including extra point arrays. Long
+windows are decimated before being streamed so the ESP32 does not allocate a
+large response body. The history is PSRAM-only, so it survives UI reconnects
+and graph panning but not device reboot or power loss. If PSRAM allocation
+failed, `ok` is `false` and `points` is empty.
+
+---
+
+## GET `/api/environment/history`
+
+Temperature and humidity samples for the sidebar graph, read from the hub's
+five-minute PSRAM history. This history fills the graph after a browser reload
+or reconnect; it is RAM-backed and is not retained across hub reboot or power
+loss.
+
+```
+curl 'http://192.168.1.100/api/environment/history'
+```
+
+Parameters:
+
+| Param | Values | Default |
+|---|---|---|
+| `abs` | `1` to return absolute `millis()` timestamps | relative offsets |
+| `since` | optional absolute `millis()` timestamp; only newer points are returned | full window |
+
+Each point is `[ms_from_now, temp_c, humidity]` by default, or
+`[ms, temp_c, humidity]` when `abs=1` is supplied.
+
+```json
+{
+  "ok": true,
+  "window_s": 300,
+  "now_ms": 12345678,
+  "time": "relative",
+  "points": [
+    [-4000, 25.1, 52.0],
+    [-2000, 25.1, 52.1]
+  ]
+}
+```
 
 ---
 
@@ -724,6 +843,16 @@ curl http://192.168.1.100/api/settings/schema
       ]
     },
     {
+      "name": "monitor",
+      "label": "Monitor",
+      "values": { "averaging": 0 },
+      "fields": [
+        { "type": "choice", "key": "averaging", "label": "Profiler averaging",
+          "help": "Newest sample, or mean of the newest 2, 4 or 8 samples",
+          "options": ["0", "2", "4", "8"] }
+      ]
+    },
+    {
       "name": "ports",
       "label": "Ports",
       "values": {
@@ -745,11 +874,14 @@ curl http://192.168.1.100/api/settings/schema
 
 - **`values.password` is returned in clear text.** Anything on the LAN can read
   the WiFi password from this endpoint.
-- Field `type` is one of `bool`, `int`, `string`, `port_bools`. A `port_bools`
-  field is a row of six numbered on/off buttons, one per port. With `value`,
-  several rows share one key: a port's button is on when its entry equals that
-  row's `value`. Turning a port on in one row turns it off in the others; a
-  port on in no row is `"manual"`, shown as **M** in the group heading.
+- Field `type` is one of `bool`, `int`, `string`, `choice`, `port_bools`.
+  A `choice` field supplies an `options` array. A `port_bools` field is a row
+  of six numbered on/off buttons, one per port. With `value`, several rows
+  share one key: a port's button is on when its entry equals that row's
+  `value`. Turning a port on in one row turns the same port off in the others;
+  a port on in no row is `"manual"`, shown as **M** in the group heading.
+- `monitor.averaging` controls the INA profiler output: `0` returns the newest
+  sample, while `2`, `4` or `8` returns the mean of that many newest samples.
 - `power_mode` is one value per port:
   - `"manual"` — only switched by you (web UI, API, button, schedules)
   - `"boot"` — powered on at startup
@@ -761,7 +893,8 @@ curl http://192.168.1.100/api/settings/schema
 - Group order follows registration order and is **not guaranteed stable** — key
   off `name`, not position.
 - The `schedules` and `website` groups are hidden from this endpoint. Schedules
-  have their own endpoints; the theme has `/api/theme`.
+  have their own endpoints; the theme has `/api/theme`; hidden graph UI
+  preferences are still accepted by `POST /api/settings` under `website`.
 
 ---
 
@@ -934,6 +1067,23 @@ curl -X POST 'http://192.168.1.100/api/settings' \
   -d '{"leds":{"brightness":120},"location":{"utc_offset":10,"city":"Melbourne"}}'
 ```
 
+Profiler averaging is stored in the visible `monitor` group:
+
+```bash
+curl -X POST http://192.168.1.100/api/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"monitor":{"averaging":4}}'
+```
+
+Hidden web UI preferences, such as graph controls and mini graph visibility,
+live in the existing `website` settings group:
+
+```bash
+curl -X POST http://192.168.1.100/api/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"website":{"mini_graphs":true,"mini_metric":"ma","graph_metric":"volts,ma,mw","graph_hz":10,"graph_window":10,"graph_scale":"linear","graph_voltage_zero":false,"graph_y_lock":false}}'
+```
+
 ```json
 { "ok": true }
 ```
@@ -941,8 +1091,14 @@ curl -X POST 'http://192.168.1.100/api/settings' \
 - The response is **always** `{"ok":true}`, even for unknown group names, and
   even for malformed JSON — in which case nothing is written. Re-read
   `/api/settings/schema` to confirm what actually landed.
-- Group names and keys match `/api/settings/schema` exactly.
+- Visible group names and keys match `/api/settings/schema` exactly. The hidden
+  `website` group also accepts the graph preference keys shown above.
+- `website.graph_metric` is a comma-separated subset of `volts`, `ma` and `mw`;
+  an empty string hides every trace. Legacy values `combined`, `volts`, `ma`
+  and `mw` are still accepted.
 - Keys you leave out keep their current values.
+- Invalid graph preference values are clamped back to defaults. The stored
+  values are returned in `/api/status` under `ui`.
 
 ---
 

@@ -31,6 +31,7 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
     <span class="ident-maker">by Unexpected Maker</span>
   </div>
   <div class="tools">
+    <button id="mini-toggle" class="tool" onclick="toggleMiniGraphs()" title="Mini graphs"><i data-icon="graph"></i></button>
     <button id="theme-toggle" class="tool" onclick="toggleTheme()" title="Light / dark"><i data-icon="sun"></i></button>
     <button class="tool" onclick="openSettings()" title="Settings"><i data-icon="gear"></i></button>
   </div>
@@ -41,6 +42,7 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
 <main class="layout">
   <section>
     <div class="bezel"><div id="ports" class="sockets"></div></div>
+    <div id="port-graph" class="detail graph-panel" style="display:none;"></div>
     <div id="port-detail" class="detail" style="display:none;"></div>
   </section>
 
@@ -51,8 +53,7 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
     </div>
     <div class="ro-group">
       <h3>Environment</h3>
-      <div class="ro-line"><span>Temperature</span><span id="s-temp">--</span></div>
-      <div class="ro-line"><span>Humidity</span><span id="s-humid">--</span></div>
+      <div class="env-graph"><canvas id="env-canvas"></canvas></div>
     </div>
     <div class="ro-group">
       <h3>Clock</h3>
@@ -177,6 +178,7 @@ body { background:var(--bg); color:var(--text); }
 .tool { width:2.25rem; height:2.25rem; padding:0; display:inline-flex; align-items:center; justify-content:center;
   background:var(--surface); color:var(--text-muted); border:1px solid var(--border); border-radius:50%; }
 .tool:hover { color:var(--text); border-color:var(--text-muted); }
+.tool.on { background:var(--accent); border-color:var(--accent); color:var(--accent-on); }
 
 /* ---- Shown only while the hub is unreachable. Everything below it stays on
    screen but can't be touched, and is greyed so it can't pass for live. ---- */
@@ -204,6 +206,7 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .socket:hover { background:var(--card-hover); }
 /* Selected = its detail is open below. Same 1px border, so nothing shifts. */
 .socket.selected { border-color:var(--accent); }
+.socket.graphing { box-shadow:inset 0 0 0 1px var(--accent); }
 .sock-head { width:100%; display:flex; align-items:center; justify-content:space-between; gap:.3rem; }
 .sock-num { font-size:1.5rem; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
 .sock-name { min-width:0; width:6.5rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
@@ -238,6 +241,7 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 
 /* Readings: current is the headline number, volts and power beneath it. */
 .sock-read { text-align:center; }
+.sock-read:hover { color:var(--accent); }
 .sock-amps { font-size:1.1rem; font-weight:600; line-height:1.15; font-variant-numeric:tabular-nums; }
 .sock-amps small { font-size:.7rem; font-weight:500; color:var(--text-muted); }
 .sock-sub { font-size:.72rem; color:var(--text-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -257,6 +261,8 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .ro-line span:first-child { color:var(--text-muted); }
 .ro-line span:last-child { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.8rem;
   text-align:right; overflow-wrap:anywhere; }
+.env-graph { width:100%; height:6.4rem; margin-top:.35rem; }
+.env-graph canvas { width:100%; height:100%; display:block; }
 
 /* ---- Detail for the selected port: next change, timeline, schedule rows. ---- */
 .detail { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:1rem; margin-top:1rem; }
@@ -351,6 +357,50 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .next-chip { font-size:.7rem; color:var(--text-dim); font-weight:600; }
 .next-chip b { color:var(--accent); font-weight:700; }
 
+/* ---- Port trend graph: compact, self-contained canvas with segmented controls. ---- */
+.graph-panel { padding:.8rem; }
+.graph-panel.off { opacity:.68; }
+.graph-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.65rem; }
+.graph-title { font-size:1rem; font-weight:700; }
+.graph-note { font-size:.7rem; font-weight:600; color:var(--text-dim); }
+.graph-body { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:.65rem; }
+.graph-tools { display:flex; gap:.45rem; flex-wrap:wrap; align-items:center; margin-bottom:.55rem; }
+.graph-status { margin-left:auto; display:grid; grid-template-columns:auto auto; column-gap:.4rem; row-gap:.05rem;
+  font-size:.58rem; font-weight:700; line-height:1.1; color:var(--text-dim); white-space:nowrap; text-align:right; }
+.graph-status b { color:var(--text-muted); font-weight:700; }
+.graph-status .head { grid-column:1/3; color:var(--text-muted); }
+.graph-seg { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--surface); }
+.graph-seg button { border:0; border-right:1px solid var(--border); background:transparent; color:var(--text-muted); padding:.24rem .45rem; font-size:.68rem; font-weight:700; min-width:2.2rem; }
+.graph-seg button:last-child { border-right:0; }
+.graph-seg button.on { background:var(--accent); color:var(--accent-on); }
+.graph-seg button.loading { background:var(--warning); color:var(--bg); }
+.graph-seg button.metric-v { color:var(--txt-blue); }
+.graph-seg button.metric-i { color:var(--success); }
+.graph-seg button.metric-p { color:var(--txt-pink); }
+.graph-seg button.metric-v.on { background:var(--txt-blue); color:var(--bg); }
+.graph-seg button.metric-i.on { background:var(--success); color:var(--bg); }
+.graph-seg button.metric-p.on { background:var(--txt-pink); color:var(--bg); }
+.graph-canvas-wrap { position:relative; width:100%; height:13rem; }
+.graph-canvas { width:100%; height:100%; display:block; }
+.graph-scroll { display:flex; align-items:center; gap:.45rem; margin-top:.35rem; font-size:.62rem; color:var(--text-dim); }
+.graph-scroll input { --buffer-start:0%; flex:1; appearance:none; -webkit-appearance:none; height:.42rem;
+  border-radius:999px; border:1px solid var(--border);
+  background:linear-gradient(to right, var(--surface-2) 0 var(--buffer-start), var(--accent) var(--buffer-start) 100%); }
+.graph-scroll input::-webkit-slider-thumb { -webkit-appearance:none; width:.85rem; height:.85rem;
+  border-radius:50%; background:var(--text); border:2px solid var(--accent); cursor:pointer; }
+.graph-scroll input::-moz-range-thumb { width:.85rem; height:.85rem; border-radius:50%;
+  background:var(--text); border:2px solid var(--accent); cursor:pointer; }
+.graph-scroll input:disabled { opacity:.45; }
+.graph-buffer { display:flex; justify-content:space-between; gap:.5rem; margin-top:.2rem; font-size:.58rem; color:var(--text-dim); }
+.graph-legend { display:flex; gap:.85rem; flex-wrap:wrap; margin-top:.45rem; font-size:.68rem; color:var(--text-muted); }
+.graph-dot { display:inline-block; width:.55rem; height:.55rem; border-radius:50%; margin-right:.25rem; vertical-align:-1px; }
+.graph-dot.v { background:var(--txt-blue); }
+.graph-dot.i { background:var(--success); }
+.graph-dot.p { background:var(--txt-pink); }
+.mini-graph { display:none; width:100%; height:2.4rem; border-top:1px solid var(--border-soft); padding-top:.35rem; cursor:pointer; }
+.mini-on .mini-graph { display:block; }
+.mini-canvas { width:100%; height:100%; display:block; }
+
 /* ---- Settings: a drawer that slides in over the page from the right. ---- */
 .drawer { position:fixed; inset:0; z-index:200; visibility:hidden; transition:visibility 0s .2s; }
 .drawer.open { visibility:visible; transition:none; }
@@ -399,6 +449,11 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
   background:transparent; border:1px solid var(--accent); color:var(--accent);
   transition:background-color .15s, color .15s; }
 .bool-btn.on { background:var(--accent); color:var(--accent-on); }
+.choice-seg { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--surface); }
+.choice-seg button { border:0; border-right:1px solid var(--border); background:transparent; color:var(--text-muted);
+  padding:.3rem .55rem; font-size:.78rem; font-weight:700; min-width:2.4rem; }
+.choice-seg button:last-child { border-right:0; }
+.choice-seg button.on { background:var(--accent); color:var(--accent-on); }
 /* Per-port on/off: six small numbered bool buttons in a row. */
 .port-bools { display:flex; gap:.25rem; }
 .bool-btn.port-bool { min-width:1.9rem; padding:.3rem 0; }
@@ -431,6 +486,7 @@ const ICONS = {
   alert: 'M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm1 6a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z',
   eye: 'M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.798c.45-.677 1.367-1.931 2.637-3.022C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.825.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z',
   eyeClosed: 'M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.832.88 9.577.43 8.9a1.619 1.619 0 0 1 0-1.797c.353-.533.995-1.42 1.868-2.305L.31 3.357A.75.75 0 0 1 .143 2.31Zm1.536 5.622A.12.12 0 0 0 1.657 8c0 .021.006.045.022.068.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688a14.207 14.207 0 0 0-1.85 2.244ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 1 1-.473-1.423A6.207 6.207 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z',
+  graph: 'M1.75 13.5h12.5a.75.75 0 0 1 0 1.5H1.75A1.75 1.75 0 0 1 0 13.25V1.75a.75.75 0 0 1 1.5 0v11.5c0 .138.112.25.25.25Zm12.03-9.97a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L7.25 5.62 4.03 8.84a.75.75 0 0 1-1.06-1.06l3.75-3.75a.75.75 0 0 1 1.06 0L10 6.25l2.72-2.72a.75.75 0 0 1 1.06 0Z',
   x: 'M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z',
   // Octicons has no USB symbol — this one is Phosphor Icons v2.1.1 (MIT,
   // github.com/phosphor-icons/core), "usb" regular weight, 256px grid.
@@ -453,12 +509,63 @@ const inflight = new Set();
 
 // ---- Port detail: timeline + schedule editor ---------------------------
 let selectedPort = null;
+let graphPort = null;
 // The page's working copy of every port's schedule, loaded from the hub and
 // sent back in full on every edit: schedules[n] = [entry, ...] for n = 1..6.
 // Entries use the hub's fields (see settings/HubSettings.h, HubScheduleEntry).
 const schedules = {};
 const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const GRAPH_WINDOWS = [10, 30, 60, 300, 600, 1200, 1800, 3600, 14400, 28800, 57600];
+const GRAPH_METRICS = ['volts', 'ma', 'mw'];
+const GRAPH_TIERS = [100, 10, 1];
+const GRAPH_TIER_WINDOWS = { 100:600, 10:1200, 1:57600 };
+const graphCfg = { metric: 'volts,ma,mw', hz: 10, window: 10, offset: 0, scale: 'linear', vzero: false, ylock: false };
+let graphBusy = false;
+let lastGraph = null;
+let graphFetchTimer = null;
+let graphFrame = null;
+let graphLastSample = 0;
+let graphClientAt = 0;
+let graphScrollTimer = null;
+let graphRequestSeq = 0;
+let graphDrawWindow = graphCfg.window;
+let graphWindowFrame = null;
+let graphLoadingWindow = 0;
+let graphHoldDrawWindow = false;
+let graphLockedRanges = {};
+let graphWarmTimer = null;
+let graphWarmBusy = false;
+let graphWarmCursor = { 100:0, 10:0, 1:0 };
+let graphWarmTier = 0;
+let graphWarmSeq = 0;
+let graphHistoryCaches = {};
+let graphHistoryCache = null;
+let graphTierStats = { 100:{ max:600, available:0, browser:0 },
+  10:{ max:1200, available:0, browser:0 }, 1:{ max:57600, available:0, browser:0 } };
+let miniGraphs = false;
+let miniMetric = 'ma';
+let miniFetchTimer = null;
+let miniBusy = false;
+let miniLastSample = 0;
+let miniRequestSeq = 0;
+const miniHistory = {};
+const envHistory = [];
+const ENV_WINDOW_MS = 5 * 60 * 1000;
+let lastEnv = null;
+let envHistoryLoaded = false;
+let envHistoryLoading = false;
+let envHistoryRequestSeq = 0;
+let uiPrefsLoaded = false;
+let uiPrefsTimer = null;
 
+// True when the port is on, or before status has loaded and the UI should avoid
+// drawing it as disabled.
+function portEnabled(n) {
+  const p = lastPorts.find((x) => x.n === n);
+  return !p || p.enabled !== false;
+}
+
+// Display title for a port, including its saved name when it has one.
 function portTitle(n) {
   const p = lastPorts.find((x) => x.n === n) || {};
   const name = (p.name || '').trim();
@@ -467,10 +574,23 @@ function portTitle(n) {
 
 // Click a socket to open or close its detail panel.
 function selectPort(n) {
-  selectedPort = (selectedPort === n) ? null : n;
+  const closing = selectedPort === n;
+  selectedPort = closing ? null : n;
+  if (closing && graphPort === n) graphPort = null;
   document.querySelectorAll('.socket').forEach((c) => c.classList.remove('selected'));
   if (selectedPort) { const c = $('port-' + selectedPort); if (c) c.classList.add('selected'); }
+  if (!graphPort) renderGraphPanel();
   renderDetail();
+  lastPorts.forEach(updatePort);
+}
+
+// Open or close the graph panel for a port.
+function selectGraph(n) {
+  const next = (graphPort === n) ? null : n;
+  const changedPort = next && next !== graphPort;
+  graphPort = next;
+  renderGraphPanel(changedPort);
+  lastPorts.forEach(updatePort);
 }
 
 // Draw the selected port's detail panel (or hide it when none is selected).
@@ -492,6 +612,907 @@ function renderDetail() {
     '<div class="sched-list" id="sched-list"></div>';
   renderSchedules();
   renderNextChip();
+}
+
+// Segmented graph control: one button per allowed value.
+function seg(name, values, labels) {
+  let out = '<span class="graph-seg">';
+  values.forEach((v, i) => {
+    out += '<button class="' + (graphCfg[name] == v ? 'on' : '') + '" onclick="setGraph(\'' + name + '\',\'' + v + '\')">' + labels[i] + '</button>';
+  });
+  return out + '</span>';
+}
+// Normalise the persisted metric set, preserving legacy single-metric values.
+function normalizeGraphMetric(value) {
+  if (value === '') return '';
+  const saved = value === 'combined' ? GRAPH_METRICS : String(value || '').split(',');
+  const active = GRAPH_METRICS.filter((m) => saved.includes(m));
+  return active.length ? active.join(',') : GRAPH_METRICS.join(',');
+}
+// Active large-graph metrics in display order.
+function graphMetrics() {
+  return GRAPH_METRICS.filter((m) => String(graphCfg.metric || '').split(',').includes(m));
+}
+// Three independent metric toggle buttons for the large graph.
+function graphMetricToggles() {
+  const active = graphMetrics();
+  let out = '<span class="graph-seg">';
+  GRAPH_METRICS.forEach((m) => {
+    const cls = (active.includes(m) ? 'on ' : '') + (m === 'volts' ? 'metric-v' : (m === 'ma' ? 'metric-i' : 'metric-p'));
+    out += '<button class="' + cls + '" onclick="toggleGraphMetric(\'' + m + '\')">' + metricLabel(m) + '</button>';
+  });
+  return out + '</span>';
+}
+// Built-in retained graph window for the selected display tier.
+function graphTierMaxWindow(hz = graphCfg.hz) {
+  return GRAPH_TIER_WINDOWS[hz] || 600;
+}
+// Largest retained graph window for the selected display tier.
+function graphMaxWindow(hz = graphCfg.hz) {
+  const stat = graphTierStats[hz];
+  const reported = lastGraph && +lastGraph.hz === hz && isFinite(+lastGraph.max_window_s)
+    ? +lastGraph.max_window_s : 0;
+  if (reported > 0) return reported;
+  if (stat && stat.max > 0) return stat.max;
+  return graphTierMaxWindow(hz);
+}
+// Portion of the selected tier currently populated for this port.
+function graphAvailableWindow(hz = graphCfg.hz) {
+  const stat = graphTierStats[hz];
+  const available = lastGraph && +lastGraph.hz === hz && isFinite(+lastGraph.available_s)
+    ? +lastGraph.available_s : 0;
+  return Math.max(0, Math.min(graphMaxWindow(hz), available || (stat ? stat.available : 0)));
+}
+// Percent of the selected visible window currently populated by samples.
+function graphViewBufferPct() {
+  if (graphCfg.window <= 0) return 0;
+  return Math.max(0, Math.min(1, graphAvailableWindow() / graphCfg.window)) * 100;
+}
+// Overall storage label for the selected graph tier.
+function graphBufferStoredLabel() {
+  return graphWindowLabel(Math.min(graphAvailableWindow(), graphMaxWindow())) + ' / ' +
+    graphWindowLabel(graphMaxWindow()) + ' stored';
+}
+// View readiness label for the selected graph window.
+function graphBufferViewLabel() {
+  const pct = graphViewBufferPct();
+  const ready = pct >= 99.5 ? 'ready' : Math.round(pct) + '% ready';
+  return graphWindowLabel(graphCfg.window) + ' view ' + ready + ' · ' + graphCfg.hz + 'Hz';
+}
+// One compact browser/device fill row for a retained history tier.
+function graphTierStatusRow(hz) {
+  const max = graphMaxWindow(hz);
+  const devicePct = max ? Math.round(graphAvailableWindow(hz) / max * 100) : 0;
+  const browserPct = max ? Math.round(graphCachedSeconds(hz) / max * 100) : 0;
+  return '<b>' + hz + 'Hz</b><span>' + browserPct + '% / ' + devicePct + '%</span>';
+}
+// Device and browser cache fill levels for all graph tiers.
+function graphBufferStatusHtml() {
+  return '<span class="head">browser / device</span>' + GRAPH_TIERS.map(graphTierStatusRow).join('');
+}
+// Human label for graph window controls.
+function graphWindowLabel(seconds) {
+  seconds = Math.max(0, Math.round(+seconds || 0));
+  if (seconds >= 3600) {
+    const hours = seconds / 3600;
+    return (Math.abs(hours - Math.round(hours)) < 0.05 ? Math.round(hours) : hours.toFixed(1)) + 'h';
+  }
+  if (seconds >= 60) {
+    const mins = seconds / 60;
+    return (Math.abs(mins - Math.round(mins)) < 0.05 ? Math.round(mins) : mins.toFixed(1)) + 'm';
+  }
+  return seconds + 's';
+}
+// Window currently used for canvas rendering; eased during window changes.
+function graphRenderWindow() {
+  return graphDrawWindow || graphCfg.window;
+}
+// Time windows available for the selected history tier.
+function graphWindowOptions() {
+  return GRAPH_WINDOWS.filter((w) => w <= graphMaxWindow());
+}
+// Maximum look-back offset that still leaves a full visible window.
+function graphMaxOffset() {
+  return Math.max(0, graphAvailableWindow() - graphCfg.window);
+}
+// Keep the selected graph window and pan offset inside the retained tier.
+function clampGraphView() {
+  const maxWin = graphMaxWindow();
+  if (graphCfg.window < 10) graphCfg.window = 10;
+  if (graphCfg.window > maxWin) graphCfg.window = maxWin;
+  graphCfg.offset = Math.max(0, Math.min(graphCfg.offset || 0, graphMaxOffset()));
+}
+// Animate the canvas x-scale when the selected time window changes.
+function animateGraphWindow(from, to) {
+  if (!isFinite(from) || from <= 0) from = to;
+  if (graphWindowFrame) cancelAnimationFrame(graphWindowFrame);
+  if (!lastGraph || Math.abs(from - to) < 0.01) {
+    graphDrawWindow = to;
+    drawGraph();
+    return;
+  }
+  const start = performance.now();
+  const duration = 180;
+  const step = () => {
+    const t = Math.min(1, (performance.now() - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    graphDrawWindow = from + (to - from) * eased;
+    drawGraph();
+    if (t < 1) graphWindowFrame = requestAnimationFrame(step);
+    else { graphDrawWindow = to; graphWindowFrame = null; drawGraph(); }
+  };
+  graphWindowFrame = requestAnimationFrame(step);
+}
+// Explicit time window buttons plus a live-head shortcut.
+function graphNav() {
+  let out = '<span class="graph-seg">';
+  graphWindowOptions().forEach((w) => {
+    const cls = graphLoadingWindow === w ? 'loading' : (graphCfg.window == w ? 'on' : '');
+    out += '<button class="' + cls + '" onclick="setGraph(\'window\',\'' + w + '\')">' + graphWindowLabel(w) + '</button>';
+  });
+  out += '</span><span class="graph-seg">' +
+    '<button id="graph-head-btn" class="' + (graphCfg.offset ? '' : 'on') +
+      '" onclick="graphHead()" title="Return to live head">Head</button>' +
+  '</span>';
+  return out;
+}
+// Button for freezing the current y-axis ranges while panning or scrolling.
+function graphScaleLockButton() {
+  return '<span class="graph-seg"><button id="graph-ylock-btn" class="' + (graphCfg.ylock ? 'on' : '') +
+    '" onclick="toggleGraphYLock()" title="Lock y-axis scaling">Y Lock</button></span>';
+}
+// Scrollbar for positioning the visible graph window inside retained history.
+function graphScrollbar() {
+  const max = graphMaxOffset();
+  const value = max - graphCfg.offset;
+  const bufferPct = graphViewBufferPct();
+  return '<div class="graph-scroll">' +
+    '<input id="graph-scrollbar" type="range" min="0" max="' + max + '" value="' + value + '"' +
+      ' style="--buffer-start:' + (100 - bufferPct) + '%"' + (max ? '' : ' disabled') +
+      ' oninput="graphScrollInput(this)">' +
+  '</div><div class="graph-buffer"><span id="graph-buffer-stored">' + graphBufferStoredLabel() +
+    '</span><span id="graph-buffer-view">' + graphBufferViewLabel() + '</span></div>';
+}
+// Draw the graph panel and start live updates for the selected port.
+function renderGraphPanel(clearPoints, fetchPoints = true) {
+  const host = $('port-graph');
+  stopGraphLoop();
+  if (!host || !graphPort) {
+    stopGraphCacheWarm();
+    if (host) { host.style.display = 'none'; host.innerHTML = ''; }
+    return;
+  }
+  clampGraphView();
+  if (clearPoints) resetGraphData();
+  host.classList.toggle('off', !portEnabled(graphPort));
+  host.style.display = 'block';
+  host.innerHTML =
+    '<div class="graph-head"><div><span class="graph-title" id="graph-title">' + esc(portTitle(graphPort)) + ' trends</span> ' +
+      '<span class="graph-note" id="graph-note">100 Hz PSRAM capture</span></div>' +
+      '<button class="tool" onclick="selectGraph(' + graphPort + ')" title="Close">' + ic('x') + '</button></div>' +
+    '<div class="graph-body">' +
+      '<div class="graph-tools">' +
+        graphMetricToggles() +
+        seg('hz', [100,10,1], ['100Hz','10Hz','1Hz']) +
+        graphNav() +
+        seg('scale', ['linear','log'], ['X Linear','X Log']) +
+        graphScaleLockButton() +
+        '<span class="graph-status" id="graph-buffer-status">' + graphBufferStatusHtml() + '</span>' +
+      '</div>' +
+      '<div class="graph-canvas-wrap"><canvas class="graph-canvas" id="graph-canvas" onclick="graphCanvasClick(event)" onwheel="graphCanvasWheel(event)"></canvas></div>' +
+      graphScrollbar() +
+      '<div class="graph-legend"><span><span class="graph-dot v"></span>Voltage</span>' +
+        '<span><span class="graph-dot i"></span>Current</span><span><span class="graph-dot p"></span>Power</span></div>' +
+    '</div>';
+  if (!lastGraph) applyGraphCachedView();
+  drawGraph();
+  if (fetchPoints) refreshGraph(true);
+  startGraphLoop();
+}
+// Change one graph setting, persist it, and redraw or fetch as needed.
+async function setGraph(k, v) {
+  const next = (k === 'hz' || k === 'window') ? (+v) : v;
+  const fromWindow = graphRenderWindow();
+  const clearPoints = k === 'hz' && next !== graphCfg.hz;
+  graphCfg[k] = next;
+  if (k === 'hz') graphCfg.offset = 0;
+  clampGraphView();
+  saveUiPrefs();
+  if (k === 'window' && graphPort) {
+    graphLoadingWindow = graphCfg.window;
+    graphHoldDrawWindow = true;
+    const loadingFor = graphLoadingWindow;
+    renderGraphPanel(false, false);
+    const ok = await refreshGraph(true);
+    if (graphLoadingWindow !== loadingFor) return;
+    graphHoldDrawWindow = false;
+    graphLoadingWindow = 0;
+    if (graphPort) {
+      renderGraphPanel(false, false);
+      if (ok) animateGraphWindow(fromWindow, graphCfg.window);
+    }
+    return;
+  }
+  const viewOnly = k === 'metric' || k === 'scale';
+  if (graphPort) {
+    renderGraphPanel(clearPoints, !viewOnly);
+  }
+}
+// Toggle one large-graph metric on or off and persist the set.
+function toggleGraphMetric(metric) {
+  const active = graphMetrics();
+  const next = active.includes(metric) ? active.filter((m) => m !== metric) : active.concat(metric);
+  graphCfg.metric = GRAPH_METRICS.filter((m) => next.includes(m)).join(',');
+  saveUiPrefs();
+  if (graphPort) renderGraphPanel(false, false);
+}
+// Toggle fixed y-axis ranges for the large graph.
+function toggleGraphYLock() {
+  graphCfg.ylock = !graphCfg.ylock;
+  graphLockedRanges = {};
+  saveUiPrefs();
+  if (graphPort) renderGraphPanel(false, false);
+}
+// Update scrollbar controls after a graph view change.
+function updateGraphScrollbar() {
+  const bar = $('graph-scrollbar');
+  const max = graphMaxOffset();
+  const bufferPct = graphViewBufferPct();
+  if (bar) {
+    bar.max = max;
+    bar.value = max - graphCfg.offset;
+    bar.disabled = max <= 0;
+    bar.style.setProperty('--buffer-start', (100 - bufferPct) + '%');
+  }
+  const stored = $('graph-buffer-stored');
+  if (stored) stored.textContent = graphBufferStoredLabel();
+  const view = $('graph-buffer-view');
+  if (view) view.textContent = graphBufferViewLabel();
+  const status = $('graph-buffer-status');
+  if (status) status.innerHTML = graphBufferStatusHtml();
+  const head = $('graph-head-btn');
+  if (head) head.classList.toggle('on', !graphCfg.offset);
+}
+// Cache key for one port and retained history tier.
+function graphHistoryKey(port = graphPort, hz = graphCfg.hz) {
+  return port ? (port + ':' + hz) : '';
+}
+// Select the browser cache for the active port/rate without discarding others.
+function useGraphHistoryCache(port = graphPort, hz = graphCfg.hz) {
+  graphHistoryCache = graphHistoryCaches[graphHistoryKey(port, hz)] || null;
+  return graphHistoryCache;
+}
+// Browser cache for one retained history tier on the selected port.
+function graphCacheFor(hz = graphCfg.hz, port = graphPort) {
+  return graphHistoryCaches[graphHistoryKey(port, hz)] || null;
+}
+// Create or update a browser cache for one retained history tier.
+function ensureGraphCache(port, hz, d) {
+  const key = graphHistoryKey(port, hz);
+  let cache = graphHistoryCaches[key];
+  if (!cache) {
+    cache = { port:port, hz:hz, points:[], ranges:[],
+      maxWindow:d.max_window_s || graphMaxWindow(hz), available:d.available_s || 0,
+      nowMs:d.now_ms || 0, clientAt:performance.now() };
+    graphHistoryCaches[key] = cache;
+  }
+  if (port === graphPort && hz === graphCfg.hz) graphHistoryCache = cache;
+  return cache;
+}
+// Live-adjusted right-edge timestamp for one browser cache.
+function graphCacheNowFor(cache) {
+  return cache ? cache.nowMs + (performance.now() - cache.clientAt) : 0;
+}
+// Stop the cache worker, optionally clearing all retained browser history.
+function resetGraphHistoryCache(clearAll = false) {
+  if (graphWarmTimer) clearTimeout(graphWarmTimer);
+  graphWarmTimer = null;
+  graphWarmBusy = false;
+  graphWarmSeq++;
+  if (clearAll) {
+    graphWarmCursor = { 100:0, 10:0, 1:0 };
+    graphWarmTier = 0;
+    graphHistoryCaches = {};
+    graphHistoryCache = null;
+    GRAPH_TIERS.forEach((hz) => { if (graphTierStats[hz]) graphTierStats[hz].browser = 0; });
+  } else {
+    useGraphHistoryCache();
+  }
+}
+// Current live-head timestamp represented by the browser cache.
+function graphCacheNowMs(hz = graphCfg.hz, port = graphPort) {
+  return graphCacheNowFor(graphCacheFor(hz, port));
+}
+// Background cache chunks stay small enough to avoid heavy history responses.
+function graphCacheChunkWindow(hz = graphCfg.hz) {
+  hz = Math.max(1, +hz || 1);
+  const exactSeconds = Math.max(10, Math.floor(1000 / hz));
+  const targetWindow = hz === graphCfg.hz ? graphCfg.window : (hz === 1 ? 300 : 60);
+  return Math.min(Math.max(targetWindow, 10), exactSeconds);
+}
+// Time range represented by a history response window and offset.
+function graphResponseRange(nowMs, seconds, offset) {
+  const end = nowMs - (offset || 0) * 1000;
+  return { start:end - seconds * 1000, end:end };
+}
+// Merge one covered time range into the browser cache's range list.
+function mergeGraphCacheRange(start, end, port = graphPort, hz = graphCfg.hz) {
+  const cache = graphCacheFor(hz, port);
+  if (!cache || end <= start) return;
+  const ranges = cache.ranges.concat([{ start:start, end:end }])
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+  ranges.forEach((r) => {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end + 250) last.end = Math.max(last.end, r.end);
+    else merged.push({ start:r.start, end:r.end });
+  });
+  const oldest = graphCacheNowMs(hz, port) - graphMaxWindow(hz) * 1000;
+  cache.ranges = merged
+    .map((r) => ({ start:Math.max(r.start, oldest), end:r.end }))
+    .filter((r) => r.end > oldest && r.end > r.start);
+}
+// Seconds of retained history currently covered by the browser cache.
+function graphCachedSeconds(hz = graphCfg.hz, port = graphPort) {
+  const cache = graphCacheFor(hz, port);
+  if (!cache)
+    return graphTierStats[hz] ? graphTierStats[hz].browser : 0;
+  const oldest = graphCacheNowFor(cache) - graphMaxWindow(hz) * 1000;
+  return cache.ranges.reduce((total, r) => {
+    const start = Math.max(r.start, oldest);
+    return total + Math.max(0, r.end - start);
+  }, 0) / 1000;
+}
+// True when the browser cache fully covers a requested visible graph range.
+function graphCacheCovers(start, end, hz = graphCfg.hz, port = graphPort) {
+  const cache = graphCacheFor(hz, port);
+  if (!cache) return false;
+  return cache.ranges.some((r) => r.start <= start + 250 && r.end >= end - 250);
+}
+// Update device-side retained history percentages from a history response.
+function updateGraphTierStats(d) {
+  if (!d) return;
+  if (Array.isArray(d.tiers)) {
+    d.tiers.forEach((t) => {
+      const hz = +t.hz;
+      if (!graphTierStats[hz]) graphTierStats[hz] = { max:graphTierMaxWindow(hz), available:0, browser:0 };
+      graphTierStats[hz].max = +t.max_window_s || graphTierStats[hz].max;
+      graphTierStats[hz].available = +t.available_s || 0;
+    });
+    return;
+  }
+  const hz = +d.hz;
+  if (!graphTierStats[hz]) graphTierStats[hz] = { max:graphTierMaxWindow(hz), available:0, browser:0 };
+  graphTierStats[hz].max = +d.max_window_s || graphTierStats[hz].max;
+  graphTierStats[hz].available = +d.available_s || 0;
+}
+// Merge absolute history points into the browser cache without changing the view.
+function mergeGraphHistory(d, coverage) {
+  updateGraphTierStats(d);
+  if (!d || !d.ok || d.time !== 'absolute' || d.port !== graphPort) return;
+  const hz = +d.hz;
+  const cache = ensureGraphCache(d.port, hz, d);
+  cache.maxWindow = d.max_window_s || cache.maxWindow;
+  cache.available = d.available_s || cache.available;
+  cache.nowMs = d.now_ms || cache.nowMs;
+  cache.clientAt = performance.now();
+  const pts = d.points || [];
+  if (pts.length) {
+    const cached = cache.points;
+    if (!cached.length || pts[0][0] >= cached[cached.length - 1][0]) {
+      let last = cached.length ? cached[cached.length - 1][0] : -1;
+      pts.forEach((p) => { if (p[0] > last) { cached.push(p); last = p[0]; } });
+    } else {
+      const combined = cached.concat(pts).sort((a, b) => a[0] - b[0]);
+      cache.points = [];
+      combined.forEach((p) => {
+        const out = cache.points;
+        if (!out.length || out[out.length - 1][0] !== p[0]) out.push(p);
+        else out[out.length - 1] = p;
+      });
+    }
+  }
+  const oldest = graphCacheNowFor(cache) - graphMaxWindow(hz) * 1000;
+  cache.points = cache.points.filter((p) => p[0] >= oldest);
+  if (coverage === 'window') {
+    const r = graphResponseRange(d.now_ms || 0, d.window_s || graphCfg.window, d.offset_s || 0);
+    mergeGraphCacheRange(r.start, r.end, d.port, hz);
+  } else if (coverage === 'points' && pts.length) {
+    const padMs = Math.max(1, Math.round(1000 / (+d.stored_hz || +d.hz || 1)));
+    mergeGraphCacheRange(pts[0][0] - padMs, pts[pts.length - 1][0] + padMs, d.port, hz);
+  }
+  if (graphTierStats[hz])
+    graphTierStats[hz].browser = graphCachedSeconds(hz, d.port);
+}
+// Draw immediately from a warmed browser slice when it covers the selected view.
+function applyGraphCachedView() {
+  const cache = useGraphHistoryCache();
+  if (!cache) return false;
+  const nowMs = graphCacheNowMs();
+  const r = graphResponseRange(nowMs, graphCfg.window, graphCfg.offset || 0);
+  if (!graphCacheCovers(r.start, r.end)) return false;
+  const pts = cache.points.filter((p) => p[0] >= r.start && p[0] <= r.end);
+  if (!pts.length) return false;
+  lastGraph = {
+    ok:true, port:graphPort, hz:graphCfg.hz, capture_hz:100, stored_hz:graphCfg.hz,
+    window_s:graphCfg.window, max_window_s:cache.maxWindow,
+    available_s:cache.available, offset_s:graphCfg.offset || 0,
+    now_ms:nowMs, time:'absolute', points:pts
+  };
+  graphClientAt = performance.now();
+  graphLastSample = pts[pts.length - 1][0];
+  updateGraphScrollbar();
+  return true;
+}
+// Schedule a low-priority cache warm pass.
+function scheduleGraphCacheWarm(delayMs = 12000) {
+  if (graphWarmTimer || graphWarmBusy || !graphPort || !portEnabled(graphPort)) return;
+  graphWarmTimer = setTimeout(warmGraphCache, delayMs);
+}
+// Stop the low-priority browser cache worker.
+function stopGraphCacheWarm() {
+  if (graphWarmTimer) clearTimeout(graphWarmTimer);
+  graphWarmTimer = null;
+  graphWarmBusy = false;
+}
+// Warm one small exact history slice for the next tier, then pause for capture.
+async function warmGraphCache() {
+  graphWarmTimer = null;
+  if (!graphPort || !portEnabled(graphPort) || graphBusy || graphScrollTimer) {
+    scheduleGraphCacheWarm();
+    return;
+  }
+  const requestedHz = GRAPH_TIERS[graphWarmTier++ % GRAPH_TIERS.length];
+  const chunk = graphCacheChunkWindow(requestedHz);
+  const maxOffset = Math.max(0, graphAvailableWindow(requestedHz) - chunk);
+  const wantedOffset = requestedHz === graphCfg.hz ? Math.min(graphCfg.offset || 0, maxOffset) : 0;
+  const wantedRange = graphResponseRange(graphCacheNowMs(requestedHz), chunk, wantedOffset);
+  let offset = graphCacheCovers(wantedRange.start, wantedRange.end, requestedHz)
+    ? Math.min(graphWarmCursor[requestedHz] || 0, maxOffset) : wantedOffset;
+  graphWarmCursor[requestedHz] = offset >= maxOffset ? 0 : offset + chunk;
+  graphWarmBusy = true;
+  const requestId = graphWarmSeq;
+  const requestedPort = graphPort;
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 2500);
+  try {
+    let url = '/api/history?port=' + requestedPort + '&hz=' + requestedHz + '&window=' + chunk + '&abs=1';
+    if (offset) url += '&offset=' + Math.round(offset);
+    const r = await fetch(url, { cache:'no-store', signal:ac.signal });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    if (requestId === graphWarmSeq && graphPort === requestedPort) {
+      mergeGraphHistory(d, 'window');
+      updateGraphScrollbar();
+    }
+  } catch (e) {
+  } finally {
+    clearTimeout(timeout);
+    graphWarmBusy = false;
+    scheduleGraphCacheWarm();
+  }
+}
+// Fetch history shortly after scrollbar movement settles.
+function queueGraphPositionFetch() {
+  if (graphScrollTimer) clearTimeout(graphScrollTimer);
+  graphScrollTimer = setTimeout(async () => {
+    graphScrollTimer = null;
+    await refreshGraph(true);
+    startGraphLoop();
+  }, 220);
+}
+// Move the visible graph window inside retained history.
+function graphScrollInput(el) {
+  clampGraphView();
+  graphCfg.offset = graphMaxOffset() - (+el.value || 0);
+  clampGraphView();
+  updateGraphScrollbar();
+  graphWarmCursor[graphCfg.hz] = Math.max(0, (graphCfg.offset || 0) - graphCacheChunkWindow());
+  if (applyGraphCachedView()) drawGraph();
+  queueGraphPositionFetch();
+}
+// Metric represented by the left y-scale column under a canvas event.
+function graphScaleMetricAt(ev) {
+  const c = $('graph-canvas');
+  if (!c) return '';
+  const r = c.getBoundingClientRect();
+  const x = ev.clientX - r.left;
+  const y = ev.clientY - r.top;
+  const series = graphMetrics();
+  const h = Math.max(160, c.clientHeight);
+  const pad = { l:series.length > 1 ? 112 : 52, r:12, t:12, b:24 };
+  if (x < 0 || y < pad.t || y > h - pad.b || x > pad.l) return '';
+  if (series.length === 1) return series[0];
+  const colW = 34;
+  for (let i = 0; i < series.length; i++) {
+    const colX = 6 + i * colW;
+    if (x >= colX - 4 && x <= colX + colW - 4) return series[i];
+  }
+  return '';
+}
+// Points currently visible enough to calculate an initial y-scale lock.
+function graphScalePoints() {
+  const off = graphPort && !portEnabled(graphPort);
+  if (off) return [[-graphRenderWindow() * 1000, 0, 0, 0], [0, 0, 0, 0]];
+  if (!lastGraph || !lastGraph.ok) return [];
+  const drawWindow = graphRenderWindow();
+  const absTime = lastGraph.time === 'absolute';
+  const nowMs = absTime ? graphDisplayEndMs() : 0;
+  const rawPts = lastGraph.points || [];
+  const pts = graphPlotPoints(rawPts, nowMs, drawWindow, absTime);
+  return absTime ? pts.filter((p) => p[0] >= nowMs - drawWindow * 1000 && p[0] <= nowMs) : pts;
+}
+// Scroll over a y-scale column to lock and adjust that metric's top level.
+function graphCanvasWheel(ev) {
+  const metric = graphScaleMetricAt(ev);
+  if (!metric) return;
+  ev.preventDefault();
+  const pts = graphScalePoints();
+  const auto = metricAutoRange(pts, metric);
+  if (!auto) return;
+  if (!graphCfg.ylock) graphCfg.ylock = true;
+  if (!graphLockedRanges[metric])
+    graphLockedRanges[metric] = { min:auto.min, max:auto.max, step:auto.step };
+  const range = graphLockedRanges[metric];
+  const span = Math.max(range.step || auto.step || 1, range.max - range.min);
+  const dir = ev.deltaY < 0 ? 1 : -1;
+  const nextMax = range.max + dir * span * 0.08;
+  const minSpan = Math.max((range.step || auto.step || 1) * 0.5, Math.abs(range.min || 0) * 0.001, 0.001);
+  range.max = Math.max(range.min + minSpan, nextMax);
+  range.step = niceStep((range.max - range.min) / 4);
+  const btn = $('graph-ylock-btn');
+  if (btn) btn.classList.toggle('on', graphCfg.ylock);
+  saveUiPrefs();
+  drawGraph();
+}
+// Return the graph to the live head.
+function graphHead() {
+  graphCfg.offset = 0;
+  renderGraphPanel(false);
+}
+// Clicking the voltage scale toggles auto-zero for voltage on the large graph.
+function graphCanvasClick(ev) {
+  const c = $('graph-canvas');
+  if (!c) return;
+  const r = c.getBoundingClientRect();
+  const x = ev.clientX - r.left;
+  const series = graphMetrics();
+  const left = series.length > 1 ? 112 : 52;
+  const hitVoltageScale = (series.includes('volts') && series.length > 1 && x <= 40) ||
+                          (series.length === 1 && series[0] === 'volts' && x <= left);
+  if (!hitVoltageScale) return;
+  graphCfg.vzero = !graphCfg.vzero;
+  delete graphLockedRanges.volts;
+  drawGraph();
+  saveUiPrefs();
+}
+// Clear displayed graph samples while keeping per-rate browser history caches.
+function resetGraphData() {
+  graphRequestSeq++;
+  if (graphScrollTimer) clearTimeout(graphScrollTimer);
+  graphScrollTimer = null;
+  resetGraphHistoryCache();
+  graphLockedRanges = {};
+  lastGraph = null;
+  graphLastSample = 0;
+  graphClientAt = 0;
+  graphDrawWindow = graphCfg.window;
+}
+// Browser fetch cadence for the chosen display rate.
+function graphFetchMs() {
+  if (graphCfg.offset) return 500;
+  return graphCfg.hz === 1 ? 1000 : 100;
+}
+// Start the graph fetch/draw loop, unless the port is off.
+function startGraphLoop() {
+  stopGraphLoop();
+  if (!graphPort) return;
+  if (!portEnabled(graphPort)) {
+    stopGraphCacheWarm();
+    drawGraph();
+    return;
+  }
+  graphFrame = requestAnimationFrame(graphAnimate);
+  const interval = graphFetchMs();
+  graphFetchTimer = setTimeout(async () => {
+    await refreshGraph(false);
+    startGraphLoop();
+  }, interval);
+  scheduleGraphCacheWarm();
+}
+// Stop any outstanding graph timers/animation frames.
+function stopGraphLoop() {
+  if (graphFetchTimer) clearTimeout(graphFetchTimer);
+  if (graphFrame) cancelAnimationFrame(graphFrame);
+  graphFetchTimer = null;
+  graphFrame = null;
+}
+// Redraw between fetches so the latest sample stays pinned to the right edge.
+function graphAnimate() {
+  drawGraph();
+  if (graphPort) graphFrame = requestAnimationFrame(graphAnimate);
+}
+// Fetch graph samples, incrementally after the first full window load.
+async function refreshGraph(force) {
+  if (!graphPort || !$('graph-canvas')) return false;
+  if (graphBusy && !force) return false;
+  if (!portEnabled(graphPort)) {
+    drawGraph();
+    return false;
+  }
+  clampGraphView();
+  const requestId = ++graphRequestSeq;
+  const requestedPort = graphPort;
+  const requestedWindow = graphCfg.window;
+  const requestedHz = graphCfg.hz;
+  const requestedOffset = graphCfg.offset;
+  graphBusy = true;
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 4000);
+  try {
+    const incremental = !force && !requestedOffset && lastGraph && graphLastSample;
+    let url = '/api/history?port=' + graphPort + '&hz=' + requestedHz + '&window=' + requestedWindow + '&abs=1';
+    if (requestedOffset) url += '&offset=' + requestedOffset;
+    if (incremental) url += '&since=' + graphLastSample;
+    const r = await fetch(url, { cache:'no-store', signal:ac.signal });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    if (requestId !== graphRequestSeq || graphPort !== requestedPort) {
+      if (requestId === graphRequestSeq) graphBusy = false;
+      return false;
+    }
+    mergeGraphHistory(d, incremental ? 'points' : 'window');
+    graphCfg.window = d.window_s || graphCfg.window;
+    if (!graphWindowFrame && !graphHoldDrawWindow) graphDrawWindow = graphCfg.window;
+    if (incremental && lastGraph) {
+      lastGraph.ok = d.ok;
+      lastGraph.now_ms = d.now_ms;
+      lastGraph.hz = d.hz;
+      lastGraph.stored_hz = d.stored_hz;
+      lastGraph.window_s = d.window_s;
+      lastGraph.max_window_s = d.max_window_s;
+      lastGraph.available_s = d.available_s;
+      lastGraph.offset_s = d.offset_s || 0;
+      lastGraph.points = (lastGraph.points || []).concat(d.points || [])
+        .filter((p) => p[0] >= d.now_ms - d.window_s * 1000);
+    } else {
+      lastGraph = d;
+    }
+    graphCfg.offset = d.offset_s || 0;
+    graphClientAt = performance.now();
+    const pts = lastGraph.points || [];
+    if (pts.length) graphLastSample = pts[pts.length - 1][0];
+    if (!lastGraph.ok) {
+      const note = $('graph-note');
+      if (note) note.textContent = 'PSRAM history unavailable';
+    }
+    updateGraphScrollbar();
+    drawGraph();
+    if (requestId === graphRequestSeq) graphBusy = false;
+    return true;
+  } catch (e) {
+    if (requestId !== graphRequestSeq || graphPort !== requestedPort) {
+      if (requestId === graphRequestSeq) graphBusy = false;
+      return false;
+    }
+    const note = $('graph-note');
+    if (note) note.textContent = 'History unavailable';
+    if (requestId === graphRequestSeq) graphBusy = false;
+  } finally {
+    clearTimeout(timeout);
+  }
+  return false;
+}
+// Pick one metric out of the compact history point [time, V, mA, mW].
+function graphVal(p, key) {
+  return key === 'volts' ? p[1] : (key === 'ma' ? p[2] : p[3]);
+}
+// Short unit label for a graph metric.
+function metricLabel(key) {
+  return key === 'volts' ? 'V' : (key === 'ma' ? 'mA' : 'mW');
+}
+// CSS variable holding the line colour for a metric.
+function metricColor(key) {
+  return key === 'volts' ? '--txt-blue' : (key === 'ma' ? '--success' : '--txt-pink');
+}
+// Format a metric value tightly enough for the graph scales.
+function metricDigits(key, v) {
+  if (key === 'volts') return v.toFixed(2);
+  return Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1);
+}
+// Round a raw scale step to 1, 2, 5 or 10 times a power of ten.
+function niceStep(raw) {
+  if (!isFinite(raw) || raw <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n = raw / p;
+  const m = n <= 1 ? 1 : (n <= 2 ? 2 : (n <= 5 ? 5 : 10));
+  return m * p;
+}
+// Sensible automatic y-axis range for one metric over the visible points.
+function metricAutoRange(pts, key) {
+  if (graphPort && !portEnabled(graphPort))
+    return { min:0, max:key === 'volts' ? 5 : 1, step:key === 'volts' ? 1 : 0.25 };
+  let min = Infinity, max = -Infinity;
+  pts.forEach((p) => { const v = graphVal(p, key); if (isFinite(v)) { min = Math.min(min, v); max = Math.max(max, v); } });
+  if (!isFinite(min) || !isFinite(max)) return null;
+  if ((key !== 'volts' || graphCfg.vzero) && min >= 0) min = 0;
+  if (min === max) {
+    const pad = key === 'volts' ? 0.05 : Math.max(1, Math.abs(max) * 0.1);
+    min -= pad; max += pad;
+    if ((key !== 'volts' || graphCfg.vzero) && min < 0) min = 0;
+  }
+  const step = niceStep((max - min) / 4);
+  min = (key === 'volts' && !graphCfg.vzero) ? Math.floor(min / step) * step : Math.max(0, Math.floor(min / step) * step);
+  max = Math.ceil(max / step) * step;
+  if (min === max) max = min + step;
+  return { min:min, max:max, step:step };
+}
+// Y-axis range for one metric, optionally frozen by the scale lock button.
+function metricRange(pts, key) {
+  const range = metricAutoRange(pts, key);
+  if (!range || !graphCfg.ylock || (graphPort && !portEnabled(graphPort))) return range;
+  if (!graphLockedRanges[key])
+    graphLockedRanges[key] = { min:range.min, max:range.max, step:range.step };
+  return graphLockedRanges[key];
+}
+// X position for a sample age, with optional logarithmic time compression.
+function graphXForAge(ageMs, pad, gw) {
+  const windowMs = graphRenderWindow() * 1000;
+  const age = Math.max(0, Math.min(windowMs, ageMs));
+  if (graphCfg.scale === 'log') {
+    const n = Math.log10(1 + age) / Math.log10(1 + windowMs);
+    return pad.l + gw * (1 - n);
+  }
+  return pad.l + gw * (1 - age / windowMs);
+}
+// Time-axis tick ages for the active window and scale.
+function graphTickAges() {
+  const window = graphRenderWindow();
+  if (graphCfg.scale !== 'log') {
+    return [window, window * 0.75, window * 0.5, window * 0.25, 0];
+  }
+  const base = [window, 14400, 3600, 600, 300, 60, 10, 1, 0];
+  const out = [];
+  base.forEach((s) => {
+    if (s <= window && !out.some((x) => Math.abs(x - s) < 0.01)) out.push(s);
+  });
+  return out;
+}
+// Human label for a time-axis tick age.
+function graphAgeLabel(seconds) {
+  if (!seconds) return 'now';
+  if (seconds >= 3600) {
+    const hours = seconds / 3600;
+    return '-' + (Math.abs(hours - Math.round(hours)) < 0.05 ? Math.round(hours) : hours.toFixed(1)) + 'h';
+  }
+  if (seconds >= 60) {
+    const mins = seconds / 60;
+    return '-' + (Math.abs(mins - Math.round(mins)) < 0.05 ? Math.round(mins) : mins.toFixed(1)) + 'm';
+  }
+  return '-' + seconds + 's';
+}
+// Right-edge timestamp for the current graph view. Live head advances between
+// network fetches so the trace scrolls smoothly.
+function graphDisplayEndMs() {
+  if (!lastGraph) return 0;
+  const offset = graphCfg.offset || 0;
+  const liveDrift = performance.now() - graphClientAt;
+  return (lastGraph.now_ms || 0) - offset * 1000 + liveDrift;
+}
+// Visible sample slice for drawing. Includes one point just before the left edge
+// and briefly holds the newest fresh value to the right edge to avoid live gaps.
+function graphPlotPoints(rawPts, nowMs, drawWindow, absTime) {
+  if (!absTime) return rawPts;
+  const startMs = nowMs - drawWindow * 1000;
+  const pts = [];
+  let before = null;
+  rawPts.forEach((p) => {
+    if (p[0] < startMs) before = p;
+    else if (p[0] <= nowMs) pts.push(p);
+  });
+  if (before) pts.unshift(before);
+  if (pts.length) {
+    const last = pts[pts.length - 1];
+    const hz = Math.max(1, +(lastGraph && (lastGraph.stored_hz || lastGraph.hz)) || graphCfg.hz || 1);
+    const holdMs = Math.max(1000, Math.round(3 * 1000 / hz));
+    if (last[0] < nowMs && nowMs - last[0] <= holdMs)
+      pts.push([nowMs, last[1], last[2], last[3]]);
+  }
+  return pts;
+}
+// Render the large graph, scales, reticule and legend from the cached samples.
+function drawGraph() {
+  const c = $('graph-canvas');
+  const off = graphPort && !portEnabled(graphPort);
+  if (!c || (!lastGraph && !off)) return;
+  const host = $('port-graph');
+  if (host) host.classList.toggle('off', !!off);
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(320, c.clientWidth), h = Math.max(160, c.clientHeight);
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const cs = getComputedStyle(document.body);
+  const text = cs.getPropertyValue('--text-muted').trim();
+  const grid = cs.getPropertyValue('--border-soft').trim();
+  const bg = cs.getPropertyValue('--bg').trim();
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+  const series = graphMetrics().map((m) => ({k:m}));
+  const drawWindow = graphRenderWindow();
+  const pad = { l: series.length > 1 ? 112 : 52, r: 12, t: 12, b: 24 };
+  const gw = w - pad.l - pad.r, gh = h - pad.t - pad.b;
+  ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.fillStyle = text; ctx.font = '10px system-ui';
+  const viewOffset = graphCfg.offset || 0;
+  graphTickAges().forEach((secs) => {
+    const x = graphXForAge(secs * 1000, pad, gw);
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + gh); ctx.stroke();
+    ctx.fillText(graphAgeLabel(secs + viewOffset), x - 10, h - 7);
+  });
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + gh * i / 4;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + gw, y); ctx.stroke();
+  }
+  const absTime = !off && lastGraph.time === 'absolute';
+  const rawPts = (!off && lastGraph.ok) ? (lastGraph.points || []) : [];
+  let nowMs = absTime ? graphDisplayEndMs() : 0;
+  const pts = off ? [[-drawWindow * 1000, 0, 0, 0], [0, 0, 0, 0]]
+    : graphPlotPoints(rawPts, nowMs, drawWindow, absTime);
+  if (!series.length) { ctx.fillText('Select a metric', pad.l + 8, pad.t + 20); return; }
+  if (!pts.length) { ctx.fillText('Waiting for samples', pad.l + 8, pad.t + 20); return; }
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.l, pad.t, gw, gh);
+  ctx.clip();
+  const scalePts = absTime ? pts.filter((p) => p[0] >= nowMs - drawWindow * 1000 && p[0] <= nowMs) : pts;
+  series.forEach((s) => {
+    const range = metricRange(scalePts.length ? scalePts : pts, s.k);
+    if (!range) return;
+    ctx.strokeStyle = off ? text : cs.getPropertyValue(metricColor(s.k)).trim();
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let any = false;
+    pts.forEach((p) => {
+      const t = absTime ? (p[0] - nowMs) : p[0];
+      const x = graphXForAge(-t, pad, gw);
+      const v = graphVal(p, s.k);
+      const y = pad.t + gh - gh * ((v - range.min) / (range.max - range.min));
+      if (!any) { ctx.moveTo(x, y); any = true; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    s.range = range;
+  });
+  ctx.restore();
+  series.forEach((s) => {
+    const range = s.range;
+    if (!range) return;
+    if (series.length === 1) {
+      ctx.fillStyle = text;
+      ctx.fillText(metricLabel(s.k) + (s.k === 'volts' && graphCfg.vzero ? ' 0' : ''), 6, pad.t + 10);
+      for (let i = 0; i <= 4; i++) {
+        const v = range.max - (range.max - range.min) * i / 4;
+        const y = pad.t + gh * i / 4;
+        ctx.fillText(metricDigits(s.k, v), 6, y + 3);
+      }
+    }
+  });
+  if (series.length > 1) {
+    const colW = 34;
+    series.forEach((s, idx) => {
+      if (!s.range) return;
+      const x = 6 + idx * colW;
+      ctx.fillStyle = off ? text : cs.getPropertyValue(metricColor(s.k)).trim();
+      ctx.fillText(metricLabel(s.k) + (s.k === 'volts' && graphCfg.vzero ? ' 0' : ''), x, pad.t + 10);
+      ctx.fillText(metricDigits(s.k, s.range.max), x, pad.t + 23);
+      ctx.fillText(metricDigits(s.k, (s.range.max + s.range.min) / 2), x, pad.t + gh / 2 + 3);
+      ctx.fillText(metricDigits(s.k, s.range.min), x, pad.t + gh);
+    });
+  }
+  const note = $('graph-note');
+  if (note) {
+    const head = graphCfg.offset ? ' · ' + graphAgeLabel(graphCfg.offset) : ' · live';
+    note.textContent = off ? 'Port off · graph paused' : pts.length + ' points · ' + graphCfg.hz + 'Hz view · ' + graphWindowLabel(graphCfg.window) + head + ' · ' + (graphCfg.scale === 'log' ? 'log time' : 'linear time');
+  }
 }
 
 // "Next: ON in 2h 15m (Mon 08:00)" beside the port name — straight from the
@@ -1201,6 +2222,18 @@ function cfgRow(g, f) {
           ' data-bool="' + (on ? 1 : 0) + '" data-on="' + n + '" data-off="' + n + '"' +
           ' title="Port ' + n + '" onclick="flipPortBool(this)">' + n + '</button>';
       }).join('') + '</span>';
+  } else if (f.type === 'choice') {
+    const options = Array.isArray(f.options) ? f.options : [];
+    const current = String(v);
+    const numeric = options.every((x) => /^-?\d+(\.\d+)?$/.test(String(x)));
+    ctl = '<span class="choice-seg" id="' + id + '" data-key="' + esc(f.key) + '"' +
+      ' data-choice="' + (numeric ? 'number' : 'string') + '" data-value="' + esc(current) + '">' +
+      options.map((opt) => {
+        const value = String(opt);
+        const on = value === current;
+        return '<button type="button" class="' + (on ? 'on' : '') + '" data-value="' + esc(value) + '"' +
+          ' onclick="chooseSetting(this)">' + esc(value) + '</button>';
+      }).join('') + '</span>';
   } else if (f.type === 'int') {
     ctl = '<input class="cfg-in num" type="number" id="' + id + '" data-key="' + esc(f.key) + '"' +
       ' value="' + (v != null ? v : 0) + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '">';
@@ -1239,6 +2272,13 @@ function flipPortBool(btn) {
   updatePortMarks(sec);
 }
 
+// A segmented choice was clicked: select one value in the group.
+function chooseSetting(btn) {
+  const seg = btn.parentElement;
+  seg.dataset.value = btn.dataset.value;
+  [...seg.children].forEach((b) => b.classList.toggle('on', b === btn));
+}
+
 // Show or hide a password field's text.
 function reveal(id, btn) {
   const el = $(id);
@@ -1266,6 +2306,9 @@ async function saveAllSettings() {
         }
       }
       else if (el.dataset.bool !== undefined) out[k] = el.dataset.bool === '1';
+      else if (el.dataset.choice !== undefined) {
+        out[k] = el.dataset.choice === 'number' ? parseFloat(el.dataset.value) : el.dataset.value;
+      }
       else if (el.type === 'number') out[k] = parseFloat(el.value) || 0;
       else out[k] = el.value;
     });
@@ -1310,6 +2353,73 @@ function toggleTheme() {
   applyTheme(next);
   fetch('/api/theme?value=' + next, { method: 'POST' }).catch(() => {});
 }
+// Persist hidden graph UI preferences through the normal settings endpoint.
+function saveUiPrefs() {
+  if (!uiPrefsLoaded) return;
+  if (uiPrefsTimer) clearTimeout(uiPrefsTimer);
+  uiPrefsTimer = setTimeout(() => {
+    uiPrefsTimer = null;
+    const body = {
+      mini_graphs: miniGraphs,
+      mini_metric: miniMetric,
+      graph_metric: graphCfg.metric,
+      graph_hz: graphCfg.hz,
+      graph_window: graphCfg.window,
+      graph_scale: graphCfg.scale,
+      graph_voltage_zero: graphCfg.vzero,
+      graph_y_lock: graphCfg.ylock
+    };
+    fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ website: body }) }).catch(() => {});
+  }, 350);
+}
+// Apply hidden graph UI preferences from the first /api/status response.
+function applyUiPrefs(ui) {
+  if (uiPrefsLoaded || !ui) return;
+  graphCfg.metric = normalizeGraphMetric(ui.graph_metric);
+  graphCfg.hz = [1,10,100].includes(+ui.graph_hz) ? +ui.graph_hz : graphCfg.hz;
+  graphCfg.window = (+ui.graph_window >= 10 && +ui.graph_window <= 57600) ? +ui.graph_window : graphCfg.window;
+  graphCfg.scale = ['linear','log'].includes(ui.graph_scale) ? ui.graph_scale : graphCfg.scale;
+  graphCfg.vzero = !!ui.graph_voltage_zero;
+  graphCfg.ylock = !!ui.graph_y_lock;
+  clampGraphView();
+  miniMetric = ['ma','mw','volts'].includes(ui.mini_metric) ? ui.mini_metric : miniMetric;
+  miniGraphs = !!ui.mini_graphs;
+  document.body.classList.toggle('mini-on', miniGraphs);
+  $('mini-toggle').classList.toggle('on', miniGraphs);
+  $('mini-toggle').title = miniGraphs ? 'Mini graphs: ' + metricLabel(miniMetric) : 'Mini graphs';
+  if (miniGraphs) {
+    resetMiniGraphData();
+    refreshMiniGraphs();
+    startMiniLoop();
+  }
+  uiPrefsLoaded = true;
+}
+// Top toolbar button: off -> mA -> mW -> volts -> off.
+function toggleMiniGraphs() {
+  const order = ['ma', 'mw', 'volts', null];
+  const wasOff = !miniGraphs;
+  const next = miniGraphs ? order[(order.indexOf(miniMetric) + 1) % order.length] : 'ma';
+  miniMetric = next || 'ma';
+  miniGraphs = next !== null;
+  document.body.classList.toggle('mini-on', miniGraphs);
+  $('mini-toggle').classList.toggle('on', miniGraphs);
+  $('mini-toggle').title = miniGraphs ? 'Mini graphs: ' + metricLabel(miniMetric) : 'Mini graphs';
+  if (miniGraphs) {
+    if (wasOff) resetMiniGraphData();
+    refreshMiniGraphs();
+    startMiniLoop();
+  } else stopMiniLoop();
+  drawMiniGraphs();
+  saveUiPrefs();
+}
+// Clicking a mini graph cycles its displayed metric while mini graphs stay on.
+function cycleMiniMetric() {
+  const order = ['ma', 'mw', 'volts'];
+  miniMetric = order[(order.indexOf(miniMetric) + 1) % order.length];
+  $('mini-toggle').title = 'Mini graphs: ' + metricLabel(miniMetric);
+  drawMiniGraphs();
+  saveUiPrefs();
+}
 
 // Seconds -> "3d 4h" / "2h 15m" / "5m" / "12s".
 function fmtUptime(s) {
@@ -1342,10 +2452,11 @@ function buildPorts(n) {
       '<div class="slot"></div>' +
       '<div class="sock-state">--</div>' +
       '<div class="port-toggle" onclick="event.stopPropagation(); togglePower(' + i + ')"><span class="toggle-knob"></span></div>' +
-      '<div class="sock-read">' +
+      '<div class="sock-read" onclick="event.stopPropagation(); selectGraph(' + i + ')" title="Open trends">' +
         '<div class="sock-amps"><span class="mma">--</span> <small>mA</small></div>' +
         '<div class="sock-sub"><span class="mv">--</span> &middot; <span class="mmw">--</span></div>' +
       '</div>' +
+      '<div class="mini-graph" onclick="event.stopPropagation(); cycleMiniMetric()" title="Cycle mini graph metric"><canvas class="mini-canvas"></canvas></div>' +
       '<div class="sock-sched">--</div>';
     host.appendChild(c);
   }
@@ -1357,12 +2468,284 @@ const STATE_LABEL = { off:'Off', blue:'No power', green:'Active', pulse:'No devi
 // States whose slot colour is animated in JS rather than set by CSS.
 const ANIMATED = ['pulse', 'fault', 'pinkpulse'];
 
+// Start fetching all-port mini graph samples at 10 Hz.
+function startMiniLoop() {
+  stopMiniLoop();
+  miniFetchTimer = setTimeout(async () => {
+    await refreshMiniGraphs();
+    startMiniLoop();
+  }, 100);
+}
+// Stop the mini graph refresh loop.
+function stopMiniLoop() {
+  if (miniFetchTimer) clearTimeout(miniFetchTimer);
+  miniFetchTimer = null;
+}
+// Clear cached all-port mini graph samples and invalidate any pending fetch.
+function resetMiniGraphData() {
+  miniRequestSeq++;
+  miniBusy = false;
+  miniLastSample = 0;
+  for (const k in miniHistory) miniHistory[k] = [];
+}
+// Fetch incremental history for every port and redraw the mini graphs.
+async function refreshMiniGraphs() {
+  if (!miniGraphs || miniBusy) return;
+  const requestId = ++miniRequestSeq;
+  miniBusy = true;
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 4000);
+  try {
+    let url = '/api/history?port=all&hz=10&window=10&abs=1';
+    if (miniLastSample) url += '&since=' + miniLastSample;
+    const r = await fetch(url, { cache:'no-store', signal:ac.signal });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    if (requestId !== miniRequestSeq)
+      return;
+    if (d.ok && d.ports) {
+      d.ports.forEach((port) => {
+        const a = miniHistory[port.port] = miniHistory[port.port] || [];
+        (port.points || []).forEach((p) => a.push({ t:p[0], volts:p[1], ma:p[2], mw:p[3] }));
+        miniHistory[port.port] = a.filter((p) => p.t >= d.now_ms - 10000);
+      });
+      let newest = miniLastSample;
+      d.ports.forEach((port) => {
+        const pts = port.points || [];
+        if (pts.length) newest = Math.max(newest, pts[pts.length - 1][0]);
+      });
+      miniLastSample = newest;
+      drawMiniGraphs();
+    }
+  } catch (e) {
+  } finally {
+    clearTimeout(timeout);
+    if (requestId === miniRequestSeq)
+      miniBusy = false;
+  }
+}
+// Render one compact trend line inside a port card.
+function drawMiniGraph(n) {
+  const c = document.querySelector('#port-' + n + ' .mini-canvas');
+  const off = !portEnabled(n);
+  const pts = off ? [{ t:0, volts:0, ma:0, mw:0 }, { t:1, volts:0, ma:0, mw:0 }] : (miniHistory[n] || []);
+  if (!miniGraphs || !c || pts.length < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(80, c.clientWidth), h = Math.max(28, c.clientHeight);
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const cs = getComputedStyle(document.body);
+  const line = off ? cs.getPropertyValue('--text-muted').trim() : cs.getPropertyValue(metricColor(miniMetric)).trim();
+  const grid = cs.getPropertyValue('--border-soft').trim();
+  let min = Infinity, max = -Infinity;
+  pts.forEach((p) => {
+    const v = p[miniMetric] || 0;
+    min = Math.min(min, v);
+    max = Math.max(max, v);
+  });
+  if (off) { min = 0; max = miniMetric === 'volts' ? 5 : 1; }
+  if (min >= 0) min = 0;
+  if (min === max) {
+    const pad = miniMetric === 'volts' ? 0.05 : Math.max(1, Math.abs(max) * 0.1);
+    min -= pad; max += pad;
+    if (min < 0) min = 0;
+  }
+  const step = niceStep((max - min) / 4);
+  min = Math.max(0, Math.floor(min / step) * step);
+  max = Math.ceil(max / step) * step;
+  if (min === max) max = min + step;
+  ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h - 1); ctx.lineTo(w, h - 1); ctx.stroke();
+  ctx.strokeStyle = line; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = w * i / (pts.length - 1);
+    const y = h - 2 - (h - 5) * (((p[miniMetric] || 0) - min) / (max - min));
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = line;
+  ctx.font = '9px system-ui';
+  ctx.fillText(metricLabel(miniMetric), 3, 9);
+  ctx.textAlign = 'right';
+  ctx.fillText(metricDigits(miniMetric, max), w - 3, 9);
+  ctx.textAlign = 'left';
+}
+// Redraw every visible mini graph.
+function drawMiniGraphs() {
+  if (!miniGraphs) return;
+  for (let n = 1; n <= 6; n++) drawMiniGraph(n);
+}
+
+// Format a sidebar environment graph scale value.
+function envDigits(key, v) {
+  return key === 'temp' ? v.toFixed(0) + 'C' : v.toFixed(0) + '%';
+}
+// Sidebar environment live value shown beside its lane label.
+function envValue(key) {
+  if (!lastEnv) return '--';
+  return key === 'temp' ? lastEnv.temp.toFixed(1) + 'C' : lastEnv.humid.toFixed(0) + '%';
+}
+// Integer y-axis bounds for a sidebar environment lane, with a useful minimum span.
+function envRange(pts, key) {
+  let min = Infinity, max = -Infinity;
+  pts.forEach((p) => {
+    const v = p[key];
+    if (isFinite(v)) { min = Math.min(min, v); max = Math.max(max, v); }
+  });
+  if (!isFinite(min) || !isFinite(max)) return null;
+  const span = 5;
+  let lo = Math.floor(min);
+  let hi = Math.ceil(max);
+  if (hi - lo < span) {
+    const mid = (min + max) / 2;
+    lo = Math.floor(mid - span / 2);
+    hi = lo + span;
+    if (hi < max) { hi = Math.ceil(max); lo = hi - span; }
+    if (lo > min) { lo = Math.floor(min); hi = lo + span; }
+  }
+  if (key === 'humid') {
+    if (lo < 0) { hi -= lo; lo = 0; }
+    if (hi > 100) { lo -= hi - 100; hi = 100; }
+    if (lo < 0) lo = 0;
+  }
+  return { min:lo, max:hi };
+}
+// Compact label for the environment graph's visible time range.
+function envTimeLabel(ms) {
+  const s = Math.round(ms / 1000);
+  return s >= 60 ? Math.round(s / 60) + 'm' : s + 's';
+}
+// Reticule tick spacing for the environment graph's time window.
+function envTickMs() {
+  if (ENV_WINDOW_MS <= 90000) return 15000;
+  if (ENV_WINDOW_MS <= 300000) return 60000;
+  return 300000;
+}
+// Draw the environment graph reticule, with time ticks sliding under the data.
+function drawEnvReticule(ctx, w, h, now, color) {
+  const tick = envTickMs();
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1;
+  for (let lane = 0; lane < 2; lane++) {
+    const y0 = lane * h / 2;
+    for (let i = 1; i <= 2; i++) {
+      const y = y0 + (h / 2) * i / 3;
+      ctx.beginPath(); ctx.moveTo(0, Math.floor(y) + .5); ctx.lineTo(w, Math.floor(y) + .5); ctx.stroke();
+    }
+  }
+  for (let t = now - (now % tick); t >= now - ENV_WINDOW_MS; t -= tick) {
+    const x = w * (1 - (now - t) / ENV_WINDOW_MS);
+    ctx.beginPath(); ctx.moveTo(Math.floor(x) + .5, 0); ctx.lineTo(Math.floor(x) + .5, h); ctx.stroke();
+  }
+  ctx.font = '9px system-ui';
+  ctx.textAlign = 'left';
+  ctx.fillText(envTimeLabel(ENV_WINDOW_MS), 3, h - 3);
+  ctx.restore();
+}
+// Draw one lane of the sidebar temperature/humidity graph.
+function drawEnvLane(ctx, pts, key, y0, h, w, now, color, label, labelColor, valueColor) {
+  const range = envRange(pts, key);
+  if (!range) return;
+  const min = range.min, max = range.max;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const age = Math.max(0, Math.min(ENV_WINDOW_MS, now - p.t));
+    const x = w * (1 - age / ENV_WINDOW_MS);
+    const pos = Math.max(0, Math.min(1, (p[key] - min) / (max - min)));
+    const y = y0 + h - 2 - (h - 10) * pos;
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+  ctx.font = '10.5px system-ui';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = labelColor;
+  ctx.fillText(label, 3, y0 + 9);
+  const labelW = ctx.measureText(label + ' ').width;
+  ctx.font = '10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+  ctx.fillStyle = valueColor;
+  ctx.fillText(envValue(key), 3 + labelW, y0 + 9);
+  ctx.font = '9px system-ui';
+  ctx.fillStyle = color;
+  ctx.textAlign = 'right';
+  ctx.fillText(envDigits(key, max), w - 3, y0 + 9);
+  ctx.fillText(envDigits(key, min), w - 3, y0 + h - 3);
+  ctx.textAlign = 'left';
+}
+// Add one status temperature/humidity sample to the sidebar graph.
+function pushEnvPoint(temp) {
+  lastEnv = temp && temp.valid ? { temp:temp.c, humid:temp.h } : null;
+  if (!lastEnv) { drawEnvGraph(); return; }
+  const now = Date.now();
+  envHistory.push({ t: now, temp: temp.c, humid: temp.h });
+  while (envHistory.length && now - envHistory[0].t > ENV_WINDOW_MS)
+    envHistory.shift();
+  drawEnvGraph();
+}
+// Fetch the hub's retained temperature/humidity samples after a page load.
+async function loadEnvHistory() {
+  if (envHistoryLoaded || envHistoryLoading) return;
+  const requestId = ++envHistoryRequestSeq;
+  envHistoryLoading = true;
+  try {
+    const r = await fetch('/api/environment/history', { cache: 'no-store' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    if (requestId !== envHistoryRequestSeq)
+      return;
+    envHistoryLoaded = true;
+    if (d.ok && Array.isArray(d.points)) {
+      const clientNow = Date.now();
+      envHistory.length = 0;
+      d.points.forEach((p) => {
+        if (p.length >= 3)
+          envHistory.push({ t:clientNow + p[0], temp:p[1], humid:p[2] });
+      });
+      drawEnvGraph();
+    }
+  } catch (e) {
+  } finally {
+    if (requestId === envHistoryRequestSeq)
+      envHistoryLoading = false;
+  }
+}
+// Render the sidebar temperature and humidity mini graph.
+function drawEnvGraph() {
+  const c = $('env-canvas');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(120, c.clientWidth), h = Math.max(75, c.clientHeight);
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const cs = getComputedStyle(document.body);
+  const grid = cs.getPropertyValue('--border-soft').trim();
+  const reticule = cs.getPropertyValue('--border').trim();
+  const text = cs.getPropertyValue('--text').trim();
+  const muted = cs.getPropertyValue('--text-muted').trim();
+  const blue = cs.getPropertyValue('--txt-blue').trim();
+  const green = cs.getPropertyValue('--success').trim();
+  ctx.strokeStyle = grid; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, Math.floor(h / 2) + .5); ctx.lineTo(w, Math.floor(h / 2) + .5); ctx.stroke();
+  if (envHistory.length < 1) return;
+  const now = Date.now();
+  drawEnvReticule(ctx, w, h, now, reticule);
+  drawEnvLane(ctx, envHistory, 'temp', 0, h / 2, w, now, blue, 'Temp', muted, text);
+  drawEnvLane(ctx, envHistory, 'humid', h / 2, h / 2, w, now, green, 'Humidity', muted, text);
+}
+
 // Refresh one socket from its entry in the status reply.
 function updatePort(p) {
   const c = $('port-' + p.n);
   if (!c) return;
   if (inflight.has(p.n)) return;   // waiting on this port's own switch result — hold
-  c.className = 'socket st-' + p.state + (p.n === selectedPort ? ' selected' : '');
+  c.className = 'socket st-' + p.state + (p.n === selectedPort ? ' selected' : '') + (p.n === graphPort ? ' graphing' : '');
   if (!ANIMATED.includes(p.state)) c.querySelector('.slot').style.background = '';
   const nameBtn = c.querySelector('.sock-name');
   const portName = (p.name || '').trim();
@@ -1403,6 +2786,7 @@ function fmtCountdown(s) {
 function applyStatus(d) {
   if (!d) return;
   if (!themeSet) { themeSet = true; applyTheme(d.theme || 'dark'); }
+  applyUiPrefs(d.ui);
   if (d.name && $('dev-name').textContent !== d.name) {   // the "Device name" setting
     $('dev-name').textContent = d.name;
     document.title = d.name;
@@ -1411,8 +2795,8 @@ function applyStatus(d) {
   if (d.rst) $('rst-reason').textContent = d.rst;
   $('s-ip').textContent     = d.ip || '--';
   $('s-uptime').textContent = fmtUptime(d.uptime_s || 0);
-  $('s-temp').textContent   = d.temp && d.temp.valid ? d.temp.c.toFixed(1) + '°C' : '--';
-  $('s-humid').textContent  = d.temp && d.temp.valid ? d.temp.h.toFixed(0) + '%' : '--';
+  if (!envHistoryLoaded) loadEnvHistory();
+  pushEnvPoint(d.temp);
   $('s-heap').textContent   = d.heap ? Math.round(d.heap/1024) + ' KB' : '--';
   $('s-maxblk').textContent = d.maxblk ? Math.round(d.maxblk/1024) + ' KB' : '--';
   if (d.total) {
@@ -1430,6 +2814,14 @@ function applyStatus(d) {
   lastPorts = d.ports;
   d.ports.forEach(updatePort);
   if (selectedPort && $('detail-title')) $('detail-title').textContent = portTitle(selectedPort);
+  if (graphPort && $('graph-title')) {
+    $('graph-title').textContent = portTitle(graphPort) + ' trends';
+    if (!portEnabled(graphPort)) {
+      stopGraphLoop();
+      drawGraph();
+    } else if (!graphFetchTimer && !graphFrame) startGraphLoop();
+  }
+  if (miniGraphs && !miniFetchTimer) startMiniLoop();
   renderNextChip();
   refreshNextRow();
 }
@@ -1438,8 +2830,33 @@ function applyStatus(d) {
 // loudly and block interaction rather than leaving a live-looking UI showing
 // stale data that you can still click on.
 let pollFails = 0;
+let lastHubUptime = null;
 function setOffline(on) {
   document.body.classList.toggle('offline', on);
+  if (on) {
+    stopGraphLoop();
+    stopGraphCacheWarm();
+    stopMiniLoop();
+  }
+}
+
+// Clear browser-side trend cursors after the hub reconnects or reboots.
+function resetTrendStateForReconnect() {
+  resetGraphHistoryCache(true);
+  if (graphPort) {
+    stopGraphLoop();
+    graphBusy = false;
+    graphCfg.offset = 0;
+    resetGraphData();
+    drawGraph();
+  }
+  resetMiniGraphData();
+  drawMiniGraphs();
+  envHistoryLoaded = false;
+  envHistoryLoading = false;
+  envHistoryRequestSeq++;
+  envHistory.length = 0;
+  drawEnvGraph();
 }
 
 // Fetch /api/status once a second. Three failures in a row = offline.
@@ -1450,6 +2867,12 @@ async function poll() {
     const r = await fetch('/api/status', { cache: 'no-store', signal: ac.signal });
     if (!r.ok) throw new Error('http ' + r.status);
     const d = await r.json();
+    const wasOffline = document.body.classList.contains('offline') || pollFails >= 3;
+    const uptime = +d.uptime_s || 0;
+    const rebooted = lastHubUptime !== null && uptime + 5 < lastHubUptime;
+    if (wasOffline || rebooted)
+      resetTrendStateForReconnect();
+    lastHubUptime = uptime;
     pollFails = 0;
     setOffline(false);
     applyStatus(d);
@@ -1483,6 +2906,7 @@ function animate(t) {
   requestAnimationFrame(animate);
 }
 requestAnimationFrame(animate);
+window.addEventListener('resize', () => { if (lastGraph) drawGraph(); drawEnvGraph(); });
 
 loadSchedules();
 poll();

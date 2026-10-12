@@ -52,7 +52,7 @@ it to suit your bench, or build your own. Everything is in this repository:
 |---|---|
 | [`firmware/`](firmware/) | The PlatformIO project — building, flashing, first-time Wi-Fi setup and how to use the hub |
 | [`hardware/`](hardware/) | KiCad 10 design files: schematic, PCB, footprints, 3D models and interactive BOM |
-| [`docs/`](docs/) | Documentation: the [JSON / REST API reference](docs/rest_api.md) and [planned future updates](docs/future_updates.md) |
+| [`docs/`](docs/) | Documentation: the [JSON / REST API reference](docs/rest_api.md), [port profiler](docs/profiler.md), [graph history](docs/graph_history.md) and [planned future updates](docs/future_updates.md) |
 | [`step/`](step/) | STEP models of the board and the case, the light pipe insert, and the parts list for printing your own case |
 
 Each folder has its own README with the details.

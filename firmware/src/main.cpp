@@ -43,6 +43,8 @@
 #include "ports/USBPort.h"
 #include "web/HubWebServer.h"
 #include "settings/HubSettings.h"
+#include "history/EnvHistory.h"
+#include "history/PortHistory.h"
 
 // Firmware version, reported by the web UI, the API and 'info'.
 #define HUB_FW_VERSION "1.1.0"
@@ -322,13 +324,28 @@ ProfileSample profilerGetPort(int i)
     return out;
 }
 
+// True when the INA3221 that monitors a port was found at boot.
+bool monitorPresent(uint8_t i)
+{
+    return (i < 3) ? g_inaAok : g_inaBok;
+}
+
+// Latest profiler-backed reading for port i (0-based). This does not touch I2C.
+PortReading profiledPortReading(uint8_t i)
+{
+    if (i >= NUM_PORTS || !monitorPresent(i))
+        return {false, 0.0f, 0.0f, 0.0f};
+    ProfileSample s = profilerGetPort(i);
+    return {true, s.volts, s.ma, s.mw};
+}
+
 // Total current and power across all monitored ports.
 void totalDraw(float &ma, float &mw)
 {
     ma = mw = 0.0f;
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
-        PortReading r = readPort(i);
+        PortReading r = profiledPortReading(i);
         ma += r.ma;
         mw += r.mw;
     }
@@ -820,6 +837,7 @@ String buildStatusJson()
     j += ",\"fw\":\"" HUB_FW_VERSION "\"";
     j += ",\"rst\":\"" + String(resetReasonStr(esp_reset_reason())) + "\"";
     j += ",\"theme\":\"" + g_website.config().theme + "\"";
+    j += ",\"ui\":" + g_website.uiPrefsJson();
     j += ",\"ip\":\"" + (up ? WiFi.localIP().toString() : String()) + "\"";
     j += ",\"uptime_s\":" + String(millis() / 1000);
     j += ",\"heap\":" + String((uint32_t)ESP.getFreeHeap());
@@ -834,7 +852,7 @@ String buildStatusJson()
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
         USBPort &port = ports[i];
-        PortReading r = readPort(i);
+        PortReading r = profiledPortReading(i);
         if (i)
             j += ",";
         j += "{\"n\":" + String(i + 1);
@@ -922,7 +940,7 @@ String scheduleEntriesJson(uint8_t i)
 String portJson(uint8_t i, bool detail)
 {
     USBPort &port = ports[i];
-    PortReading r = readPort(i);
+    PortReading r = profiledPortReading(i);
     String j = "{\"n\":" + String(i + 1);
     j += ",\"enabled\":" + String(jb(port.isEnabled()));
     j += ",\"occupied\":" + String(jb(port.isOccupied()));
@@ -1101,6 +1119,20 @@ void startNetServices()
         [](int n, bool on) {
             if (n >= 1 && n <= NUM_PORTS)
                 ports[n - 1].setEnabled(on);
+        },
+        [](Print &out, int n, int hz, int seconds, uint32_t sinceMs,
+           bool absoluteTime, uint32_t offsetSeconds) {
+            if (n == 0)
+            {
+                g_history.writeJsonAll(out, hz, seconds, millis(), sinceMs, absoluteTime, offsetSeconds);
+                return;
+            }
+            if (n < 1 || n > NUM_PORTS)
+                n = 1;
+            g_history.writeJson(out, n - 1, hz, seconds, millis(), sinceMs, absoluteTime, offsetSeconds);
+        },
+        [](Print &out, uint32_t sinceMs, bool absoluteTime) {
+            g_envHistory.writeJson(out, millis(), sinceMs, absoluteTime);
         },
         []() { return g_schedules.toJsonString(); },
         [](const String &body) {
@@ -1443,6 +1475,9 @@ void setup()
 
     config.begin();         // mount LittleFS and load each group from /settings/
     g_schedules.validate(); // flag bad entries before anything can fire
+    g_history.begin();      // PSRAM rolling measurements for the web graphs
+    g_envHistory.begin();   // PSRAM sidebar environment history
+    profilerSetAveraging(g_monitor.config().averaging);
 
     strip.setBrightness(g_leds.config().brightness);
     startBootSweep(g_wifi.config().ssid.length() == 0);
@@ -1454,6 +1489,7 @@ void setup()
         if (g_ports.config().power_mode[i] == "boot")
             ports[i].enable();
     }
+    profilerStart();        // background INA sampling for status and graphs
 
     pinMode(EXP_INT_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(EXP_INT_PIN), onExpanderInt, FALLING);
@@ -1530,6 +1566,19 @@ void loop()
         refreshNextInfo(weekMinute(tmNow));
     serviceSchedules();
 
+    // ---- port history: PSRAM graph tiers fed from the profiler cache ----
+    static uint32_t lastHistory = 0;
+    uint32_t historyNow = millis();
+    if (historyNow - lastHistory >= PortHistory::SAMPLE_MS)
+    {
+        lastHistory = historyNow;
+        for (uint8_t i = 0; i < NUM_PORTS; i++)
+        {
+            PortReading r = profiledPortReading(i);
+            g_history.record(i, historyNow, r.ok, r.volts, r.ma);
+        }
+    }
+
     // ---- temperature: every 2 s (the sensor needs >= 1 s between reads) ----
     // Start a measurement, then collect it 100 ms later (it takes ~80 ms).
     // Split in two so the bus is only held for each short transfer, never
@@ -1551,6 +1600,7 @@ void loop()
             g_tempC = aht.getTemperature();
             g_humid = aht.getHumidity();
             g_tempValid = true;
+            g_envHistory.record(millis(), g_tempC, g_humid);
         }
     }
 

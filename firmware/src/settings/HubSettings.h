@@ -29,6 +29,7 @@
 //   wifi       g_wifi       credentials and DHCP / static addressing
 //   location   g_location   city, UTC offset and NTP server
 //   leds       g_leds       port LED on/off and brightness
+//   monitor    g_monitor    INA profiler filtering
 //   ports      g_ports      which ports power up at boot
 //   website    g_website    web UI theme
 //   schedules  g_schedules  per-port power schedules, plus their validation
@@ -55,6 +56,7 @@ struct HubSettingField
         Bool,      // on/off button
         Int,       // number box, bounded by min/max, stepping by step
         String,    // text box (masked automatically if the key looks secret)
+        Choice,    // one value from a fixed list, shown as segmented buttons
         PortBools  // one on/off button per port, numbered 1-6. With `value` set,
                    // a button is on when that port's entry equals `value`
     };
@@ -66,6 +68,7 @@ struct HubSettingField
     long step = 1;              // Int only
     const char *help = nullptr; // optional one-line hint shown under the field
     const char *value = nullptr;   // PortBools only: the entry an "on" button stands for
+    const char *options = nullptr; // Choice only: comma-separated values
 };
 
 class HubConfig;
@@ -221,8 +224,8 @@ public:
     const char *label() const override { return "WiFi"; }
     std::vector<HubSettingField> uiSchema() override;
 
-    // Notes whether anything actually changed, so saving the Settings drawer
-    // only reconnects WiFi when the WiFi values were edited.
+    // Load WiFi settings and remember whether anything actually changed, so
+    // saving the Settings drawer only reconnects WiFi when WiFi was edited.
     void fromJson(const nlohmann::json &j) override;
 
     // Store new credentials and save (used by the serial console).
@@ -304,6 +307,30 @@ public:
 extern LedsSettings g_leds;
 
 // ===========================================================================
+// monitor — INA profiler options.
+// ===========================================================================
+struct HubMonitorConfig
+{
+    uint8_t averaging = 0; // newest sample only, or average newest 2 | 4 | 8
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubMonitorConfig, averaging);
+
+class MonitorSettings : public HubSettingsT<HubMonitorConfig>
+{
+public:
+    const char *name() const override { return "monitor"; }
+    const char *label() const override { return "Monitor"; }
+    std::vector<HubSettingField> uiSchema() override;
+
+    // Loads as usual, then clamps unsupported averaging values to the profiler
+    // values documented in docs/profiler.md.
+    void fromJson(const nlohmann::json &j) override;
+    // Re-apply profiler filtering immediately after a web settings change.
+    void onConfigChanged() override;
+};
+extern MonitorSettings g_monitor;
+
+// ===========================================================================
 // ports — per-port options: the power mode and the port names. Power modes are
 // set in the Settings drawer; names on the port cards.
 // ===========================================================================
@@ -343,8 +370,18 @@ extern PortsSettings g_ports;
 struct HubWebsiteConfig
 {
     String theme = "dark"; // "dark" | "light"
+    bool mini_graphs = false;
+    String mini_metric = "ma";    // "ma" | "mw" | "volts"
+    String graph_metric = "volts,ma,mw"; // comma-separated subset of "volts", "ma", "mw"
+    uint8_t graph_hz = 10;        // 1 | 10 | 100
+    uint16_t graph_window = 10;   // seconds, clamped to retained history
+    String graph_scale = "linear"; // "linear" | "log" time axis
+    bool graph_voltage_zero = false;
+    bool graph_y_lock = false;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubWebsiteConfig, theme);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubWebsiteConfig, theme, mini_graphs, mini_metric,
+                                                graph_metric, graph_hz, graph_window, graph_scale,
+                                                graph_voltage_zero, graph_y_lock);
 
 class WebsiteSettings : public HubSettingsT<HubWebsiteConfig>
 {
@@ -353,8 +390,11 @@ public:
     const char *label() const override { return "Website"; }
     bool show_on_website() const override { return false; }
 
+    void fromJson(const nlohmann::json &j) override;
     // Store the theme; anything other than "dark" or "light" is ignored.
     void setTheme(const String &theme);
+    // The graph UI reads its hidden preferences from /api/status.
+    String uiPrefsJson() const;
 };
 extern WebsiteSettings g_website;
 

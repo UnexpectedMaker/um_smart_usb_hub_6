@@ -15,15 +15,38 @@
 static AsyncWebServer server(80);
 HubWebServer webServer;
 
+// Convert a settings field kind into the JSON schema string used by the UI.
 static const char *fieldTypeStr(HubSettingField::T t)
 {
     switch (t)
     {
     case HubSettingField::T::Bool: return "bool";
     case HubSettingField::T::Int:  return "int";
+    case HubSettingField::T::Choice: return "choice";
     case HubSettingField::T::PortBools: return "port_bools";
     default:                       return "string";
     }
+}
+
+// Split a comma-separated settings option list into JSON string values.
+static nlohmann::json optionListJson(const char *csv)
+{
+    nlohmann::json options = nlohmann::json::array();
+    if (!csv)
+        return options;
+    String rest(csv);
+    while (rest.length())
+    {
+        int comma = rest.indexOf(',');
+        String value = (comma >= 0) ? rest.substring(0, comma) : rest;
+        value.trim();
+        if (value.length())
+            options.push_back(value.c_str());
+        if (comma < 0)
+            break;
+        rest = rest.substring(comma + 1);
+    }
+    return options;
 }
 
 // One settings group as {name, label, values, fields} — what the Settings
@@ -54,6 +77,8 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
             fj["help"] = f.help;
         if (f.value)
             fj["value"] = f.value;
+        if (f.type == HubSettingField::T::Choice)
+            fj["options"] = optionListJson(f.options);
         fields.push_back(fj);
     }
     g["fields"] = fields;
@@ -80,6 +105,7 @@ static bool collectBody(AsyncWebServerRequest *req, uint8_t *data, size_t len, s
 }
 
 void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
+                         HistoryFn historyFn, EnvHistoryFn envHistoryFn,
                          SchedGetFn schedGetFn, SchedSetFn schedSetFn)
 {
     if (_started)
@@ -117,6 +143,52 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         if (req->hasParam("n") && req->hasParam("on"))
             portFn(req->getParam("n")->value().toInt(), req->getParam("on")->value().toInt() != 0);
         req->send(200, "application/json", statusFn());
+    });
+
+    // GET /api/history?port=1..6|all&hz=100|10|1&window=<seconds> — PSRAM graph data.
+    // Optional since=<millis>&abs=1 returns only newer points with absolute
+    // sample times, so the web UI can update live without re-sending the window.
+    // Optional offset=<seconds> pans back from the live head.
+    server.on("/api/history", HTTP_GET, [historyFn](AsyncWebServerRequest *req) {
+        int port = 1;
+        if (req->hasParam("port"))
+        {
+            String portParam = req->getParam("port")->value();
+            portParam.toLowerCase();
+            if (portParam == "all")
+                port = 0;
+            else
+            {
+                port = portParam.toInt();
+                if (port < 1)
+                    port = 1;
+            }
+        }
+        int hz = req->hasParam("hz") ? req->getParam("hz")->value().toInt() : 10;
+        int win = req->hasParam("window") ? req->getParam("window")->value().toInt() : 10;
+        uint32_t since = req->hasParam("since")
+                             ? (uint32_t)strtoul(req->getParam("since")->value().c_str(), nullptr, 10)
+                             : 0;
+        bool abs = req->hasParam("abs") && req->getParam("abs")->value().toInt() != 0;
+        uint32_t offset = req->hasParam("offset")
+                              ? (uint32_t)strtoul(req->getParam("offset")->value().c_str(), nullptr, 10)
+                              : 0;
+        AsyncResponseStream *res = req->beginResponseStream("application/json", 2048);
+        historyFn(*res, port, hz, win, since, abs, offset);
+        req->send(res);
+    });
+
+    // GET /api/environment/history?since=<millis>&abs=1 — retained sidebar
+    // temperature/humidity trend data. Relative time is the default for
+    // browser reloads because client and hub clocks are different.
+    server.on("/api/environment/history", HTTP_GET, [envHistoryFn](AsyncWebServerRequest *req) {
+        uint32_t since = req->hasParam("since")
+                             ? (uint32_t)strtoul(req->getParam("since")->value().c_str(), nullptr, 10)
+                             : 0;
+        bool abs = req->hasParam("abs") && req->getParam("abs")->value().toInt() != 0;
+        AsyncResponseStream *res = req->beginResponseStream("application/json", 1024);
+        envHistoryFn(*res, since, abs);
+        req->send(res);
     });
 
     // All schedules. POST replaces them (JSON body) and replies with what was

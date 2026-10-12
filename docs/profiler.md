@@ -13,6 +13,9 @@ background task, and keeps the last 8 samples per port. Code is in
 | `bool profilerSetAveraging(int samples)` | Sets how many samples `profilerGetPort()` averages: `0`, `2`, `4` or `8`. Returns `false` and changes nothing for any other value. Default `0`. |
 | `ProfileSample profilerGetPort(int port)` | Returns one port's reading (below). |
 
+The selected averaging value is stored in the normal settings system under
+`monitor.averaging` and can be changed through `POST /api/settings`.
+
 ## `profilerGetPort(int port)`
 
 `port` is the port index, **0–5** (port 1 = 0).
@@ -45,6 +48,11 @@ struct ProfileSample
   **powered** port. Ports that are off aren't read, and their samples are
   cleared.
 - The samples are a ring buffer of 8 per port. The newest overwrites the oldest.
+- The web status, REST port responses and graph history use this cached profiler
+  data, so normal UI refreshes do not perform extra INA3221 reads.
+- Graph history stores profiler voltage/current snapshots in PSRAM at 100 Hz,
+  10 Hz and 1 Hz tiers. Power is calculated when history is served. The
+  profiler remains the only service that polls the INA devices.
 
 ## Rules
 

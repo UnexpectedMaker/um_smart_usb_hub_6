@@ -10,12 +10,15 @@
 // (timezone + location lookup, WiFi change detection, schedule validation).
 #include "HubSettings.h"
 #include <LittleFS.h>
+#include <initializer_list>
 #include <HTTPClient.h>
 #include <string.h>
 #include <time.h>
 
 static const char *SETTINGS_DIR = "/settings";           // one <group>.json per group
 static const char *OLD_SETTINGS_FILE = "/settings.json"; // firmware 1.0.0: all groups in one file
+
+extern bool profilerSetAveraging(int samples);
 
 // ---- HubRegistry ---------------------------------------------------------
 
@@ -200,6 +203,7 @@ DeviceSettings g_device;
 WiFiSettings g_wifi;
 LocationSettings g_location;
 LedsSettings g_leds;
+MonitorSettings g_monitor;
 PortsSettings g_ports;
 WebsiteSettings g_website;
 SchedulesSettings g_schedules;
@@ -368,6 +372,32 @@ std::vector<HubSettingField> LedsSettings::uiSchema()
 }
 
 // ===========================================================================
+// monitor
+// ===========================================================================
+
+std::vector<HubSettingField> MonitorSettings::uiSchema()
+{
+    return {
+        {.type = F::T::Choice, .key = "averaging", .label = "Profiler averaging",
+         .help = "Newest sample, or mean of the newest 2, 4 or 8 samples",
+         .options = "0,2,4,8"},
+    };
+}
+
+void MonitorSettings::fromJson(const nlohmann::json &j)
+{
+    HubSettingsT<HubMonitorConfig>::fromJson(j);
+    if (_config.averaging != 0 && _config.averaging != 2 &&
+        _config.averaging != 4 && _config.averaging != 8)
+        _config.averaging = 0;
+}
+
+void MonitorSettings::onConfigChanged()
+{
+    profilerSetAveraging(_config.averaging);
+}
+
+// ===========================================================================
 // ports
 // ===========================================================================
 
@@ -428,10 +458,78 @@ void PortsSettings::fromJson(const nlohmann::json &j)
 // website
 // ===========================================================================
 
+// True when value is one of the short strings accepted for a web UI setting.
+static bool oneOf(const String &value, std::initializer_list<const char *> allowed)
+{
+    for (const char *a : allowed)
+        if (value == a)
+            return true;
+    return false;
+}
+
+// Clamp hidden website preferences after loading from flash or /api/settings.
+static void sanitizeWebsite(HubWebsiteConfig &c)
+{
+    if (!oneOf(c.theme, {"dark", "light"}))
+        c.theme = "dark";
+    if (!oneOf(c.mini_metric, {"ma", "mw", "volts"}))
+        c.mini_metric = "ma";
+    c.graph_metric.replace(" ", "");
+    if (c.graph_metric == "combined")
+        c.graph_metric = "volts,ma,mw";
+    String graphMetric;
+    if (c.graph_metric.length())
+    {
+        for (const char *metric : {"volts", "ma", "mw"})
+        {
+            if (c.graph_metric.indexOf(metric) < 0)
+                continue;
+            if (graphMetric.length())
+                graphMetric += ",";
+            graphMetric += metric;
+        }
+    }
+    if (graphMetric.length() || !c.graph_metric.length())
+        c.graph_metric = graphMetric;
+    else
+        c.graph_metric = "volts,ma,mw";
+    if (c.graph_hz != 1 && c.graph_hz != 10 && c.graph_hz != 100)
+        c.graph_hz = 10;
+    if (c.graph_window < 10 || c.graph_window > 57600)
+        c.graph_window = 10;
+    if (!oneOf(c.graph_scale, {"linear", "log"}))
+        c.graph_scale = "linear";
+}
+
+// Apply partial website settings through the normal macro loader, then validate.
+void WebsiteSettings::fromJson(const nlohmann::json &j)
+{
+    HubSettingsT<HubWebsiteConfig>::fromJson(j);
+    sanitizeWebsite(_config);
+}
+
+// Store the light/dark theme selected by the UI.
 void WebsiteSettings::setTheme(const String &theme)
 {
     if (theme == "dark" || theme == "light")
         _config.theme = theme;
+}
+
+// Compact JSON for hidden UI preferences included in /api/status.
+String WebsiteSettings::uiPrefsJson() const
+{
+    String j = "{\"mini_graphs\":";
+    j += _config.mini_graphs ? "true" : "false";
+    j += ",\"mini_metric\":\"" + _config.mini_metric + "\"";
+    j += ",\"graph_metric\":\"" + _config.graph_metric + "\"";
+    j += ",\"graph_hz\":" + String(_config.graph_hz);
+    j += ",\"graph_window\":" + String(_config.graph_window);
+    j += ",\"graph_scale\":\"" + _config.graph_scale + "\"";
+    j += ",\"graph_voltage_zero\":";
+    j += _config.graph_voltage_zero ? "true" : "false";
+    j += ",\"graph_y_lock\":";
+    j += _config.graph_y_lock ? "true" : "false";
+    return j + "}";
 }
 
 // ===========================================================================
