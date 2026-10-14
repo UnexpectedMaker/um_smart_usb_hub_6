@@ -388,6 +388,9 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 /* Legend and Head indicator, at the right-hand end of the tools. */
 .graph-legend-key { display:inline-flex; align-items:center; gap:.35rem; font-size:.68rem; color:var(--text-muted); }
 .graph-swatch { display:inline-block; width:.9rem; height:.7rem; border-radius:2px; }
+.graph-swatch.v { background:var(--txt-blue); }
+.graph-swatch.i { background:var(--success); }
+.graph-swatch.p { background:var(--txt-pink); }
 .graph-swatch.missing { background:var(--danger); opacity:.35; }
 .graph-head-ind { display:inline-flex; align-items:center; gap:.35rem; font-size:.68rem; font-weight:700;
   color:var(--text-dim); cursor:default; user-select:none; }
@@ -415,6 +418,8 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .graph-sb-thumb::before { left:3px; }
 .graph-sb-thumb::after { right:3px; }
 .graph-sb-thumb span { font-size:.62rem; font-weight:700; color:var(--bg); white-space:nowrap; padding:0 .6rem; }
+/* HISTORICAL: .graph-legend and .graph-dot are no longer used (the legend moved
+   to the top right, with .graph-swatch). Kept for now; to be removed. */
 .graph-legend { display:flex; gap:.85rem; flex-wrap:wrap; margin-top:.45rem; font-size:.68rem; color:var(--text-muted); }
 .graph-dot { display:inline-block; width:.55rem; height:.55rem; border-radius:50%; margin-right:.25rem; vertical-align:-1px; }
 .graph-dot.v { background:var(--txt-blue); }
@@ -876,12 +881,15 @@ function graphView(h) {
 function graphSetZoom(h, a, b) {
   graphZoom = { a:a, b:b, head:b >= h.hi };
 }
-// Right-hand end of the tools: a legend (for now just missing data), then the
-// Head indicator. Head isn't a control: it's lit while the view follows the
+// Right-hand end of the tools: the legend (voltage, current, power, missing
+// data), then the Head indicator. Head isn't a control: it's lit while the view follows the
 // newest reading, which happens when showing everything, or when the brush
 // thumb's right edge is dragged to the end.
 function graphNav() {
-  return '<span class="graph-legend-key"><span class="graph-swatch missing"></span>Missing data</span>' +
+  return '<span class="graph-legend-key"><span class="graph-swatch v"></span>Voltage</span>' +
+    '<span class="graph-legend-key"><span class="graph-swatch i"></span>Current</span>' +
+    '<span class="graph-legend-key"><span class="graph-swatch p"></span>Power</span>' +
+    '<span class="graph-legend-key"><span class="graph-swatch missing"></span>Missing data</span>' +
     '<span class="graph-head-ind on" id="graph-head-btn" title="Lit while the graph follows the newest reading">' +
       '<span class="graph-head-dot"></span>Head</span>';
 }
@@ -954,8 +962,6 @@ function renderGraphPanel() {
         '<div class="graph-sb" id="graph-sb"><div class="graph-sb-thumb" id="graph-sb-thumb"' +
           ' onmousedown="graphThumbDown(event)" onmousemove="graphThumbHover(event)">' +
           '<span id="graph-span"></span></div></div></div>' +
-      '<div class="graph-legend"><span><span class="graph-dot v"></span>Voltage</span>' +
-        '<span><span class="graph-dot i"></span>Current</span><span><span class="graph-dot p"></span>Power</span></div>' +
     '</div>';
   drawGraph();
   startLiveLoop();
