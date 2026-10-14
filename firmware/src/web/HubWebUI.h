@@ -369,25 +369,34 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
    title was removed). Kept for now; to be removed. */
 .graph-note { font-size:.7rem; font-weight:600; color:var(--text-dim); }
 .graph-body { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:.65rem; }
-.graph-tools { display:flex; gap:.45rem; flex-wrap:wrap; align-items:center; margin-bottom:.55rem; }
+.graph-tools { display:flex; gap:.35rem; flex-wrap:wrap; align-items:center; margin-bottom:.55rem; }
+/* One line until the items really don't fit: then the legend and Head move
+   down together. The measurements box only takes space while it's showing
+   (zoomed in). Nothing shrinks or wraps its text. */
+.graph-tools > * { flex-shrink:0; }
+.graph-seg button { white-space:nowrap; }
 .graph-seg { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--surface); }
-.graph-seg button { border:0; border-right:1px solid var(--border); background:transparent; color:var(--text-muted); padding:.24rem .45rem; font-size:.68rem; font-weight:700; min-width:2.2rem; }
+.graph-seg button { border:0; border-right:1px solid var(--border); background:transparent; color:var(--text-muted); padding:.24rem .36rem; font-size:.68rem; font-weight:700; min-width:2.2rem; }
 .graph-seg button:last-child { border-right:0; }
 /* Measurements for what's in view, centred between the averaging buttons and
    the legend: a bordered box, a shade lighter than the panel, with a row per
    metric in its colour, columns Min / Max / Avg. */
-.graph-measure { margin:0 auto; display:inline-flex; padding:.3rem .6rem;
+.graph-measure { margin:0 auto; display:inline-flex; padding:.25rem .4rem;
   border:1px solid var(--border); border-radius:6px; background:var(--surface); }
-.graph-measure.off { visibility:hidden; }
-.graph-stats { display:grid; grid-template-columns:auto repeat(3, auto); column-gap:.8rem; row-gap:.22rem;
-  font-size:.68rem; line-height:1.15; font-variant-numeric:tabular-nums; text-align:right; }
+.graph-measure.off { display:none; }  /* takes no space, so it never makes the row wrap */
+.graph-stats { display:grid; grid-template-columns:auto repeat(3, auto); column-gap:.45rem; row-gap:.22rem;
+  font-size:.64rem; line-height:1.15; font-variant-numeric:tabular-nums; text-align:right; }
 .graph-stats b { font-weight:700; color:var(--text-dim); }
 .graph-stats .gs-volts { color:var(--txt-blue); }
 .graph-stats .gs-ma { color:var(--success); }
 .graph-stats .gs-mw { color:var(--txt-pink); }
-/* Legend and Head indicator, at the right-hand end of the tools. */
-.graph-legend-key { display:inline-flex; align-items:center; gap:.35rem; font-size:.68rem; color:var(--text-muted); }
-.graph-swatch { display:inline-block; width:.9rem; height:.7rem; border-radius:2px; }
+/* Legend and Head indicator, on one line at the right-hand end of the tools.
+   The whole tools row is one line (see .graph-tools); these are kept compact
+   so it fits with the measurements box showing. */
+.graph-right { display:flex; align-items:center; gap:.5rem; flex-wrap:nowrap; margin-left:auto; white-space:nowrap; }
+.graph-legend-row { display:flex; align-items:center; gap:.4rem; }
+.graph-legend-key { display:inline-flex; align-items:center; gap:.2rem; font-size:.64rem; color:var(--text-muted); }
+.graph-swatch { display:inline-block; width:.7rem; height:.6rem; border-radius:2px; }
 .graph-swatch.v { background:var(--txt-blue); }
 .graph-swatch.i { background:var(--success); }
 .graph-swatch.p { background:var(--txt-pink); }
@@ -703,7 +712,7 @@ function histStore(n) {
   if (!hist[n])
     hist[n] = { v:new Float32Array(HIST_SLOTS), ma:new Float32Array(HIST_SLOTS), lo:0, hi:-1,
       events:[], wallAt:0, busy:false, filling:false, filled:false,
-      vMin:Infinity, vMax:-Infinity, iMin:Infinity, iMax:-Infinity, pMin:Infinity, pMax:-Infinity };
+      firstValid:Infinity, vMin:Infinity, vMax:-Infinity, iMin:Infinity, iMax:-Infinity, pMin:Infinity, pMax:-Infinity };
   return hist[n];
 }
 // Fetch one binary history page. Layout: PortHistory::Page in the firmware.
@@ -737,6 +746,7 @@ function histPut(h, p, minCount) {
     if (x & 0x800000) {
       let s = x & 0x1fff;
       if (s & 0x1000) s -= 0x2000;
+      if (c < h.firstValid) h.firstValid = c;
       const v = h.v[k] = ((x >> 13) & 0x3ff) * BUS_V;
       const ma = h.ma[k] = s * SHUNT_MA, mw = v * ma;
       if (v < h.vMin) h.vMin = v; if (v > h.vMax) h.vMax = v;
@@ -862,18 +872,30 @@ function graphSpanLabel(seconds) {
 function graphPad() {
   return { l:112, r:12, t:14, b:24 };
 }
+// Where the graph's full view starts: the first real reading held. Time before
+// it (the port off since the hub started, say) holds no readings, so showing
+// everything shows from the first reading to the newest, not the whole hour.
+function graphLo(h) {
+  if (h.firstValid < h.lo) {
+    // That reading has dropped out of the 60 minutes: find the next one.
+    let c = h.lo;
+    while (c <= h.hi && h.v[c % HIST_SLOTS] !== h.v[c % HIST_SLOTS]) c++;
+    h.firstValid = c <= h.hi ? c : Infinity;
+  }
+  return h.firstValid <= h.hi ? h.firstValid : h.lo;
+}
 // The capture counts shown, first and last: everything held, or the zoomed
 // part of it. A zoom locked to the head moves along with each new reading.
 // Null before any readings.
 function graphView(h) {
   if (!h || h.hi < 0) return null;
   const z = graphZoom;
-  if (!z) return { a:h.lo, b:h.hi };
+  if (!z) return { a:graphLo(h), b:h.hi };
   const len = z.b - z.a;
   if (z.head) { z.b = h.hi; z.a = h.hi - len; }
-  if (z.a < h.lo) { z.a = h.lo; z.b = Math.min(h.hi, h.lo + len); }
+  if (z.a < graphLo(h)) { z.a = graphLo(h); z.b = Math.min(h.hi, graphLo(h) + len); }
   if (z.b > h.hi) z.b = h.hi;
-  if (z.b - z.a < GRAPH_MIN_ZOOM || (z.a <= h.lo && z.b >= h.hi)) { graphZoom = null; return { a:h.lo, b:h.hi }; }
+  if (z.b - z.a < GRAPH_MIN_ZOOM || (z.a <= graphLo(h) && z.b >= h.hi)) { graphZoom = null; return { a:graphLo(h), b:h.hi }; }
   return { a:z.a, b:z.b };
 }
 // Set the zoom to capture counts a..b. Reaching the newest reading locks it to
@@ -886,16 +908,17 @@ function graphSetZoom(h, a, b) {
 // newest reading, which happens when showing everything, or when the brush
 // thumb's right edge is dragged to the end.
 function graphNav() {
-  return '<span class="graph-legend-key"><span class="graph-swatch v"></span>Voltage</span>' +
+  return '<span class="graph-right"><span class="graph-legend-row">' +
+    '<span class="graph-legend-key"><span class="graph-swatch v"></span>Voltage</span>' +
     '<span class="graph-legend-key"><span class="graph-swatch i"></span>Current</span>' +
     '<span class="graph-legend-key"><span class="graph-swatch p"></span>Power</span>' +
-    '<span class="graph-legend-key"><span class="graph-swatch missing"></span>Missing data</span>' +
+    '<span class="graph-legend-key"><span class="graph-swatch missing"></span>Missing</span></span>' +
     '<span class="graph-head-ind on" id="graph-head-btn" title="Lit while the graph follows the newest reading">' +
-      '<span class="graph-head-dot"></span>Head</span>';
+      '<span class="graph-head-dot"></span>Head</span></span>';
 }
 // Measurements for what's in view: the lowest, highest and average of each
 // metric, one row each in its colour. Filled in by drawGraph(), and only shown
-// while zoomed in (hidden but keeping its space when showing everything).
+// while zoomed in; hidden, it takes no space.
 function graphStatsBlock() {
   let out = '<span class="graph-measure off" id="graph-stats"><span class="graph-stats"><span></span><b>Min</b><b>Max</b><b>Avg</b>';
   GRAPH_METRICS.forEach((k) => {
@@ -904,6 +927,8 @@ function graphStatsBlock() {
   });
   return out + '</span></span>';
 }
+// Fill in the measurements from what the last draw showed (graphVisible),
+// and show the box only while zoomed in.
 function updateGraphStats() {
   const box = $('graph-stats');
   if (box) box.classList.toggle('off', !graphZoom);
@@ -1094,7 +1119,7 @@ function graphCursorEdge() {
   const len = v.b - v.a;
   let shift = Math.round(over / p.gw * len * 0.1);
   if (!shift) shift = over < 0 ? -1 : 1;
-  const a = Math.max(h.lo, Math.min(h.hi - len, v.a + shift));
+  const a = Math.max(graphLo(h), Math.min(h.hi - len, v.a + shift));
   graphSetZoom(h, a, a + len);
   graphCursor = over < 0 ? a : a + len;
   graphCursorAge = a + len - graphCursor;
@@ -1121,9 +1146,9 @@ function graphMouseUp(ev) {
     let a = graphCountAt(d.v, Math.min(d.x0, d.x1), d.p), b = graphCountAt(d.v, Math.max(d.x0, d.x1), d.p);
     // A selection under 1 second zooms to 1 second around its middle.
     if (b - a < GRAPH_MIN_ZOOM) {
-      a = Math.max(h.lo, Math.round((a + b - GRAPH_MIN_ZOOM) / 2));
+      a = Math.max(graphLo(h), Math.round((a + b - GRAPH_MIN_ZOOM) / 2));
       b = Math.min(h.hi, a + GRAPH_MIN_ZOOM);
-      a = Math.max(h.lo, b - GRAPH_MIN_ZOOM);
+      a = Math.max(graphLo(h), b - GRAPH_MIN_ZOOM);
     }
     if (b - a >= GRAPH_MIN_ZOOM) graphSetZoom(h, a, b);
   }
@@ -1139,9 +1164,9 @@ function graphWheelZoom(ev) {
   if (!v || !graphInPlot(graphPlotPos(ev))) return;
   ev.preventDefault();
   const len = v.b - v.a;
-  const next = Math.max(GRAPH_MIN_ZOOM, Math.min(h.hi - h.lo, Math.round(len * Math.exp(ev.deltaY * 0.002))));
+  const next = Math.max(GRAPH_MIN_ZOOM, Math.min(h.hi - graphLo(h), Math.round(len * Math.exp(ev.deltaY * 0.002))));
   if (next === len) return;
-  const a = Math.max(h.lo, Math.min(h.hi - next, Math.round((v.a + v.b - next) / 2)));
+  const a = Math.max(graphLo(h), Math.min(h.hi - next, Math.round((v.a + v.b - next) / 2)));
   graphZoom = { a:a, b:a + next, head:false };
   drawGraph();
 }
@@ -1174,7 +1199,7 @@ function graphThumbDown(ev) {
   if (!v || !sb || !thumb || ev.button !== 0) return;
   const part = graphThumbPart(ev);
   if (!part && !graphZoom) return;
-  const total = h.hi - h.lo + 1, len = v.b - v.a;
+  const total = h.hi - graphLo(h) + 1, len = v.b - v.a;
   const room = sb.clientWidth - thumb.offsetWidth;
   graphDrag = { kind:part ? 'edge' : 'thumb', part:part, x0:ev.clientX, a0:v.a, b0:v.b, len:len,
     head:!graphZoom || !!graphZoom.head,
@@ -1190,14 +1215,14 @@ function graphThumbMove(ev) {
   const d = graphDrag, h = hist[graphPort];
   if (!d || !h) return;
   const shift = Math.round((ev.clientX - d.x0) * d.perPx);
-  const snap = Math.ceil(GRAPH_EDGE_W * (h.hi - h.lo + 1) / Math.max(1, $('graph-sb').clientWidth));
+  const snap = Math.ceil(GRAPH_EDGE_W * (h.hi - graphLo(h) + 1) / Math.max(1, $('graph-sb').clientWidth));
   if (d.kind === 'thumb') {
-    let a = Math.max(h.lo, Math.min(h.hi - d.len, d.a0 + shift));
+    let a = Math.max(graphLo(h), Math.min(h.hi - d.len, d.a0 + shift));
     if (a + d.len >= h.hi - snap) a = h.hi - d.len;
     graphSetZoom(h, a, a + d.len);
   } else if (d.part === 'a') {
     const b = d.head ? h.hi : d.b0;
-    graphSetZoom(h, Math.max(h.lo, Math.min(b - GRAPH_MIN_ZOOM, d.a0 + shift)), b);
+    graphSetZoom(h, Math.max(graphLo(h), Math.min(b - GRAPH_MIN_ZOOM, d.a0 + shift)), b);
   } else {
     let b = Math.min(h.hi, Math.max(d.a0 + GRAPH_MIN_ZOOM, d.b0 + shift));
     if (b >= h.hi - snap) b = h.hi;
@@ -1218,9 +1243,9 @@ function updateGraphBrush(h, v) {
   if (!sb || !thumb || !span) return;
   span.textContent = v ? graphSpanLabel((v.b - v.a + 1) / HIST_HZ) : '';
   const track = sb.clientWidth;
-  const total = v ? h.hi - h.lo + 1 : 1, len = v ? v.b - v.a + 1 : 1;
+  const total = v ? h.hi - graphLo(h) + 1 : 1, len = v ? v.b - v.a + 1 : 1;
   const w = Math.min(track, Math.max(len / total * track, span.offsetWidth + 16));
-  const left = v && total > len ? (v.a - h.lo) / (total - len) * (track - w) : 0;
+  const left = v && total > len ? (v.a - graphLo(h)) / (total - len) * (track - w) : 0;
   thumb.style.left = left + 'px';
   thumb.style.width = w + 'px';
   thumb.classList.toggle('zoomed', !!graphZoom);
@@ -1364,13 +1389,6 @@ function graphAgeLabel(seconds) {
 }
 
 // ---- Drawing ------------------------------------------------------------------
-// The points to draw for the readings from capture count a to b, across gw
-// pixels. With averaging on, each reading is first averaged with the ones
-// before it, like the port cards.
-//  - More readings than pixels: one point per block of readings about a pixel
-//    wide, with their average, lowest and highest, so spikes show. A block with
-//    no readings breaks the line.
-//  - Fewer: one point per reading. A missing reading breaks the line.
 // The capture-count ranges [first, last] the port was switched off, from its
 // power off / power on events. Readings missing while it was off aren't
 // missing data: nothing was expected. Before the first power event, the port's
@@ -1388,6 +1406,16 @@ function graphOffRanges(h, n) {
   if (from !== null) out.push([from, Infinity]);
   return out;
 }
+// The points to draw for the readings from capture count a to b, across gw
+// pixels. With averaging on, each reading is first averaged with the ones
+// before it, like the port cards.
+//  - More readings than pixels: one point per block of readings about a pixel
+//    wide, with their average, lowest and highest, so spikes show. A block with
+//    no readings breaks the line.
+//  - Fewer: one point per reading. A missing reading breaks the line.
+// Runs of missing readings come back in `gaps`, except while the port was
+// switched off (`off`, from graphOffRanges()); `count` and the sums give the
+// exact average of the readings in view.
 function graphPoints(h, a, b, gw, off) {
   const cols = Math.max(1, Math.round(gw));
   const span = b - a + 1;

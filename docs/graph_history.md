@@ -25,7 +25,7 @@ its history graph or its schedule. Selecting one deselects the other.
   line, an arrow and a label. Labels that would overlap stack downwards.
 - Averaging buttons: Off, 2, 4, 8 or 16. The same setting as the port cards'
   averaging, saved to flash 3 s after the last change.
-- Legend at the top right: Voltage, Current, Power, Missing data. Then the
+- Legend at the top right: Voltage, Current, Power, Missing. Then the
   Head indicator, lit while the view follows the newest reading.
 
 **Zoom and the brush:**
