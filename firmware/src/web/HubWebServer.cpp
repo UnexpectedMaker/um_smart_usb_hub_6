@@ -10,6 +10,7 @@
 // The port history is streamed straight out of the PSRAM history (g_history).
 #include "HubWebServer.h"
 #include "HubWebUI.h"
+#include "HubWebIcons.h"
 #include "history/PortHistory.h"
 #include "settings/HubSettings.h"
 #include <ESPAsyncWebServer.h>
@@ -146,6 +147,19 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     server.on("/hub.js", HTTP_GET, [](AsyncWebServerRequest *req) {
         req->send(200, "application/javascript", HUB_SCRIPT_JS);
     });
+    // The icon as PNG and ICO, for Safari, which doesn't use the SVG icon in
+    // the page and also asks for these paths on its own.
+    auto icon = [](const char *path, const char *type, const uint8_t *data, size_t len) {
+        server.on(path, HTTP_GET, [type, data, len](AsyncWebServerRequest *req) {
+            AsyncWebServerResponse *res = req->beginResponse(200, type, data, len);
+            res->addHeader("Cache-Control", "max-age=86400");
+            req->send(res);
+        });
+    };
+    icon("/favicon.ico", "image/x-icon", HUB_FAVICON_ICO, sizeof(HUB_FAVICON_ICO));
+    icon("/favicon-32.png", "image/png", HUB_FAVICON_32_PNG, sizeof(HUB_FAVICON_32_PNG));
+    icon("/apple-touch-icon.png", "image/png", HUB_APPLE_TOUCH_PNG, sizeof(HUB_APPLE_TOUCH_PNG));
+    icon("/apple-touch-icon-precomposed.png", "image/png", HUB_APPLE_TOUCH_PNG, sizeof(HUB_APPLE_TOUCH_PNG));
 
     // ---- Web UI data ----
 
