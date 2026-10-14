@@ -126,7 +126,9 @@ apply nothing. See *Current limitations*.
 | `POST` | `/api/location/detect` | Trigger IP geolocation lookup |
 | `POST` | `/api/hub/ports?on=` | Set **all** ports on/off at once |
 
-Static assets, also served from flash: `GET /`, `GET /hub.css`, `GET /hub.js`.
+Static assets, also served from flash: `GET /`, `GET /hub.css`, `GET /hub.js`,
+and the icon: `GET /favicon.ico`, `GET /favicon-32.png`, `GET /apple-touch-icon.png`
+(also as `/apple-touch-icon-precomposed.png`).
 
 **Two schedule representations exist.** The REST endpoints (`/api/ports/...`)
 emit `mode` as a **string** and omit the `on` boolean. The web-UI endpoints
@@ -966,8 +968,12 @@ curl http://192.168.1.100/api/settings/schema
   them, and they'll be removed.
 - `power_mode` is one value per port:
   - `"manual"` — only switched by you (web UI, API, button, schedules)
-  - `"boot"` — powered on at startup
-  - `"connect"` — powered on when a device is plugged in, off when unplugged
+  - `"boot"` — powered on at startup, and straight away when it's set
+  - `"connect"` — powered on when a device is plugged in, off when unplugged;
+    when it's set with a device already plugged in, or a device is plugged in
+    at startup, the port powers on straight away
+
+  Setting a mode never switches a port off.
 
   Any other value is stored as `"manual"`.
 - `min`/`max`/`step` appear only on `int` fields.
@@ -1162,7 +1168,7 @@ curl -X POST http://192.168.1.100/api/settings \
 ```bash
 curl -X POST http://192.168.1.100/api/settings \
   -H 'Content-Type: application/json' \
-  -d '{"profiler":{"mini_graphs":true,"mini_metric":"ma","graph_metric":"volts,ma,mw","graph_window":10,"graph_scale":"linear","graph_voltage_zero":false,"graph_y_lock":false}}'
+  -d '{"profiler":{"mini_metric":"ma","graph_metric":"volts,ma,mw","graph_voltage_zero":false}}'
 ```
 
 ```json

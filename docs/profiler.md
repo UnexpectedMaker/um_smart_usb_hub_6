@@ -64,6 +64,12 @@ port is never read.
   still read in its own period. A cycle that runs later than that leaves
   the period it missed invalid, rather than storing a reading under the wrong
   time.
+- It runs at task priority 15 on core 1 (`PROFILE_PRIORITY`): above the web
+  server's task (AsyncTCP, priority 10) and `loop()`, below the WiFi and
+  system timer tasks. Each cycle takes well under 1 ms.
+- It counts, since boot, the periods it missed and the reads of a powered port
+  that failed. The serial `info` command shows both on its `profiler` line.
+  Both should stay at 0.
 - It compares each port's power and device state with the previous period's,
   and adds any change to that port's event list at the current capture count:
   power off (1), power on (2), device removed (3), device inserted (4).
@@ -105,4 +111,7 @@ port is never read.
   ```
 
   Keep the block to the I2C transfer itself. Don't put a delay or a
-  busy-poll inside it: the profiler can't read while the lock is held.
+  busy-poll inside it: the profiler can't read while the lock is held. Check
+  library calls too. The AHT20 library's `requestData()` checks and resets the
+  sensor with up to about 70 ms of delays, so `loop()` starts each measurement
+  with `ahtTrigger()` instead, and the check and reset run once at boot.

@@ -6,30 +6,76 @@ decisions behind the implementation.
 
 ## What changed
 
-- Two buttons on the top bar, a graph and a clock, pick what clicking a port
-  shows: its history graph or its schedule. Selecting one deselects the other.
-- The large graph can display voltage, current and power together or as any
-  selected subset.
-- The graph always shows all the history held for the port, filling the
-  width, and grows as new readings come in. With more readings than pixels,
-  each pixel column is drawn as the average of the readings in it.
-- Drag across the graph to zoom in on that span of time; double-click to zoom
-  back out. While zoomed, the arrows on the graph's left and right edges move
-  that end of the zoom, and the scrollbar thumb moves the zoomed span through
-  the history. The length of time shown is always shown under the graph.
-- The Y axis is set from all the history held, so it doesn't change when
-  zooming or scrolling. Scrolling over a scale label adjusts its top level.
-- Averaging buttons: Off, 2, 4, 8 or 16. This is the same setting as the port
-  cards' averaging.
-- Port events (power off/on, device removed/inserted) are marked on the graph
-  with a dashed line, an arrow and a label.
-- The window, Head, X Linear / X Log and Y Lock buttons are still shown, but
-  do nothing.
-- Every port card shows a mini graph of its newest 10 seconds; clicking it
-  cycles mA, mW and V.
-- The sidebar environment panel now has temperature and humidity trends.
-- Graph UI preferences and profiler averaging are stored in the `profiler`
-  settings group.
+**Top bar.** Two buttons, a graph and a clock, pick what clicking a port shows:
+its history graph or its schedule. Selecting one deselects the other.
+
+**The graph** (one port at a time):
+
+- Shows voltage, current and power together or any of them (V / mA / mW
+  buttons).
+- Always shows all the history held for the port, filling the width, and grows
+  as new readings come in, unless zoomed in.
+- With more readings than pixels, readings are grouped in blocks about a pixel
+  wide, lined up on the capture count so the live view doesn't shimmer. Each
+  block is drawn as its average, with a faint band from its lowest to its
+  highest reading, so short spikes still show.
+- Readings missing while the port was on (a missed period or a failed read)
+  are shaded red. Time the port was switched off isn't.
+- Port events (power off/on, device removed/inserted) are marked with a dashed
+  line, an arrow and a label. Labels that would overlap stack downwards.
+- Averaging buttons: Off, 2, 4, 8 or 16. The same setting as the port cards'
+  averaging, saved to flash 3 s after the last change.
+- Legend at the top right: Voltage, Current, Power, Missing data. Then the
+  Head indicator, lit while the view follows the newest reading.
+
+**Zoom and the brush:**
+
+- Drag across the plot to zoom to that span (time only). Double-click the plot
+  to zoom back out. The scroll wheel over the plot zooms in and out around the
+  middle of the view.
+- The shortest zoom is 1 second (100 readings).
+- The brush under the graph covers all the history held. Its blue thumb is the
+  part shown, with the length of time shown inside it; it never gets narrower
+  than that label. Drag the thumb to move the zoom; drag either edge to move
+  that end of the zoom.
+- Dragging the thumb's right edge to the end locks the view to the newest
+  reading (Head): it moves along as readings arrive, and stays locked while the
+  left edge is dragged. The scroll wheel never locks it, and unlocks it.
+
+**Cursor:**
+
+- A vertical line with an arrow on top, always in view; it moves to the middle
+  if a zoom leaves it out. Click anywhere on the plot to move it there (a press
+  that moves less than 6 px is a click, more is a zoom drag), or drag the line,
+  which can be grabbed up to 12 px either side. Dragging past either side of
+  the plot moves the view along.
+- A box beside it shows its clock time and how long ago that was, and the
+  value of each metric shown. A dot marks where it crosses each line.
+- While the view follows the newest reading, the cursor stays at the same place
+  on the plot.
+
+**Y scales** (the V, mA and mW label columns on the left):
+
+- Set from all the history held, so they don't change when zooming or
+  scrolling.
+- Hovering a column tints it. Double-click it to fit that metric to what's in
+  view, with 12.5% clear above and below. Drag it up or down to move that
+  metric's line. Scroll over it to stretch or squash the scale around the
+  metric's average in view. Single-click the V column to toggle voltage
+  auto-zero.
+- Every scale stays between 0 and its limit (6 V, 1802 mA, 10,811 mW), with
+  12.5% of the height to spare beyond each.
+
+**Measurements.** While zoomed in, a box between the averaging buttons and the
+legend shows the lowest, highest and average of each metric in view.
+
+**Mini graphs.** Every port card shows a mini graph of its newest 10 seconds,
+whichever view is selected; clicking it cycles mA, mW and V. The line stays
+below the labels, and each scale's top is at least 10 mA, 50 mW or 1 V.
+
+**Also:** the sidebar environment panel has temperature and humidity trends.
+The graph preferences and averaging are stored in the `profiler` settings
+group.
 
 ## Theory of operation
 
