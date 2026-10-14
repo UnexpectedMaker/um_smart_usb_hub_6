@@ -19,7 +19,7 @@ decisions behind the implementation.
   the history. The length of time shown is always shown under the graph.
 - The Y axis is set from all the history held, so it doesn't change when
   zooming or scrolling. Scrolling over a scale label adjusts its top level.
-- Averaging buttons: Off, 2, 4 or 8. This is the same setting as the port
+- Averaging buttons: Off, 2, 4, 8 or 16. This is the same setting as the port
   cards' averaging.
 - Port events (power off/on, device removed/inserted) are marked on the graph
   with a dashed line, an arrow and a label.
@@ -103,13 +103,10 @@ window needed by the sidebar graph.
 
 All persistent graph options use the existing settings framework.
 
-Settings panel, in the `profiler` group:
+None of the `profiler` group is shown in the Settings panel. All of it is set
+by the graph's controls:
 
-- `averaging`: `0`, `2`, `4` or `8`
-
-Web UI graph preferences, also in the `profiler` group (not shown in the
-Settings panel):
-
+- `averaging`: `0`, `2`, `4`, `8` or `16`, from the averaging buttons
 - `mini_metric`
 - `graph_metric`
 - `graph_voltage_zero`

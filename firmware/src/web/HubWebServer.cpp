@@ -340,6 +340,36 @@ void HubWebServer::registerRest()
     {
         String base = "/api/ports/" + String(n);
         String sched = base + "/schedule";
+        String history = base + "/history";
+        // GET /api/ports/{n}/history?page=<1..> — the port's PSRAM history as
+        // JSON, 10 minutes per page (layout: PortHistory::jsonPage()). Page 1
+        // (the default) is the newest 10 minutes, page 2 the 10 minutes before
+        // that, and so on; the response says how many pages there are. 400 for
+        // a bad page number, 503 if there's no PSRAM history.
+        server.on(history.c_str(), HTTP_GET, [n, history](AsyncWebServerRequest *req) {
+            if (!exactPath(req, history))
+                return;
+            uint32_t pageNo = 1;
+            if (req->hasParam("page") && (!paramUint(req, "page", pageNo) || pageNo < 1))
+            {
+                req->send(400, "application/json", "{\"error\":\"bad param\",\"detail\":\"page must be 1 or more\"}");
+                return;
+            }
+            auto jp = std::make_shared<PortHistory::JsonPage>();
+            if (!g_history.jsonPage(n - 1, pageNo, *jp))
+            {
+                req->send(503, "application/json", "{\"error\":\"no history\",\"detail\":\"PSRAM history unavailable\"}");
+                return;
+            }
+            // Streamed a piece at a time, so the page is never built in RAM.
+            AsyncWebServerResponse *res = req->beginChunkedResponse(
+                "application/json", [jp](uint8_t *buf, size_t maxLen, size_t) -> size_t {
+                    size_t len = g_history.jsonChunk(*jp, buf, maxLen);
+                    return (len || jp->done) ? len : RESPONSE_TRY_AGAIN;
+                });
+            res->addHeader("Cache-Control", "no-store");
+            req->send(res);
+        });
         server.on(sched.c_str(), HTTP_GET, [this, n, sched](AsyncWebServerRequest *req) {
             if (exactPath(req, sched))
                 req->send(200, "application/json", _rest.portSchedule(n));

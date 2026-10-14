@@ -12,11 +12,13 @@ responses and the serial `info` and `mon` commands all read from it. Code is in
 | Function | Does |
 |---|---|
 | `void profilerStart()` | Starts the sampling task. Called once from `setup()`; the task never stops. Does nothing if it's already running, or if the PSRAM history couldn't be allocated. |
-| `bool profilerSetAveraging(int samples)` | Sets how many readings `profilerGetPort()` averages: `0`, `2`, `4` or `8`. Returns `false` and changes nothing for any other value. Default `0`. |
+| `bool profilerSetAveraging(int samples)` | Sets how many readings `profilerGetPort()` averages: `0`, `2`, `4`, `8` or `16`. Returns `false` and changes nothing for any other value. Default `0`. |
 | `ProfileSample profilerGetPort(int port)` | Returns one port's reading (below). Use it for every port reading. |
 
 The selected averaging value is stored in the normal settings system under
-`profiler.averaging` and can be changed through `POST /api/settings`.
+`profiler.averaging`. The web UI sets it from the graph's averaging buttons,
+through `POST /api/settings`; it isn't in the Settings panel. It's saved to
+flash once it has gone unchanged for 3 seconds (`PROFILER_SAVE_DELAY_MS`).
 
 ## `profilerGetPort(int port)`
 
@@ -33,11 +35,11 @@ struct ProfileSample
 };
 ```
 
-Reads the port's newest 8 slots in the
-history (80 ms) and skips invalid ones.
+Reads the port's newest 16 slots in the
+history (160 ms) and skips invalid ones.
 
 - **Averaging `0`:** the newest valid reading.
-- **Averaging `2`, `4` or `8`:** the mean of the newest 2, 4 or 8 valid
+- **Averaging `2`, `4`, `8` or `16`:** the mean of the newest 2, 4, 8 or 16 valid
   readings. Just after a port powers on, fewer exist, and it averages those.
 - **`{0, 0, 0}`** when none of those slots is valid.
 - It only reads the history, so any number of callers can use it at once and
@@ -58,7 +60,8 @@ port is never read.
   **powered** port, and writes one slot for **every** port: the raw reading, or
   an invalid slot when the port is off, its INA3221 wasn't found or the read
   failed.
-- It sleeps until the middle of the next period. A cycle that runs late leaves
+- It sleeps until 1 ms into the next period, so it can run up to 9 ms late and
+  still read in its own period. A cycle that runs later than that leaves
   the period it missed invalid, rather than storing a reading under the wrong
   time.
 - It compares each port's power and device state with the previous period's,

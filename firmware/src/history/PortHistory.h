@@ -66,6 +66,9 @@ public:
     {
         uint32_t first;    // capture count of the first reading
         uint32_t readings; // how many readings
+        bool hasData;      // anything held at all
+        uint32_t oldest;   // oldest and newest capture counts held, when the
+        uint32_t newest;   // page was planned (valid when hasData)
         size_t headBytes;  // header + events
         uint8_t head[PAGE_HEADER_BYTES + MAX_EVENTS * EVENT_BYTES];
     };
@@ -78,8 +81,27 @@ public:
                      // newer than anything held (the hub restarted), the newest.
     };
 
+    // Converts one port's raw registers to volts and mA, for the JSON history.
+    // The history doesn't know which chip, channel or shunt a port uses, so
+    // main.cpp supplies this.
+    using ConvertFn = void (*)(uint8_t port, int16_t bus, int16_t shunt,
+                               float &volts, float &ma);
+
+    // JSON history for the REST API: numbered pages of PAGE_SAMPLES (10
+    // minutes), page 1 the newest, written out a piece at a time as the
+    // response is sent.
+    struct JsonPage
+    {
+        uint8_t port;
+        Page page;
+        String head;     // everything before the readings
+        size_t headSent; // how much of head has been written
+        uint32_t next;   // readings written so far
+        bool done;       // the closing "]}" has been written
+    };
+
     // Allocate the PSRAM history. Returns false if PSRAM is unavailable.
-    bool begin();
+    bool begin(ConvertFn convert);
     // True once the PSRAM history has been allocated.
     bool available() const { return _samples != nullptr; }
 
@@ -103,6 +125,13 @@ public:
     // bytes each). A reading that's no longer held, or was overwritten while
     // being copied, is copied as an invalid reading.
     void readRaw(uint8_t port, uint32_t first, uint32_t n, uint8_t *out) const;
+    // Plan JSON page `pageNo` (1 = the newest 10 minutes, 2 = the 10 minutes
+    // before that, ...). A page past the oldest reading has no samples. False
+    // if there's no history or the port is out of range.
+    bool jsonPage(uint8_t port, uint32_t pageNo, JsonPage &out) const;
+    // Write the next piece of a JSON page into buf, at most len bytes. Returns
+    // how many were written: 0 once the page is complete.
+    size_t jsonChunk(JsonPage &jp, uint8_t *buf, size_t len) const;
 
     // NOT ALLOWED: writeJsonAll() (every port's history in one response) was
     // removed from /api/history and must not be put back. History is only ever
@@ -136,6 +165,7 @@ private:
     uint16_t _eventHead[HUB_NUM_PORTS] = {};
     uint16_t _eventCount[HUB_NUM_PORTS] = {};
     State _state = {};
+    ConvertFn _convert = nullptr;
     mutable portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
 };
 

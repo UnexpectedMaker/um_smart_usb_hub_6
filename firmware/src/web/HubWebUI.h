@@ -216,7 +216,7 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
   font-size:.74rem; font-weight:700; text-align:right; line-height:1.2; border-radius:4px; }
 .sock-name::placeholder { color:var(--text-muted); opacity:1; }
 .sock-name:hover, .sock-name:focus { color:var(--text); background:var(--surface-2); outline:none; }
-.sock-name.named { color:var(--text); text-shadow:0 0 .45rem var(--name-glow), 0 0 .9rem var(--name-glow); }
+.sock-name.named { color:var(--text); }
 .sock-state { font-size:.68rem; font-weight:600; color:var(--text-muted); text-align:center; line-height:1.2; min-height:.85rem; }
 
 /* The USB-C opening, filled with whatever that port's RGB LED is showing — it
@@ -227,10 +227,6 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .st-blue  .slot { background:var(--led-blue); }
 .st-green .slot { background:var(--led-green); }
 .st-pink  .slot { background:var(--led-pink); }
-.st-blue, .st-pulse { --name-glow:var(--led-blue); }
-.st-green { --name-glow:var(--led-green); }
-.st-fault { --name-glow:var(--led-red); }
-.st-pink, .st-pinkpulse { --name-glow:var(--led-pink); }
 /* Waiting for a power change to come back from the hub. */
 .st-wait  .slot { background:repeating-linear-gradient(45deg, var(--slot-off) 0 4px, var(--border) 4px 8px); }
 
@@ -372,7 +368,27 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .graph-seg { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--surface); }
 .graph-seg button { border:0; border-right:1px solid var(--border); background:transparent; color:var(--text-muted); padding:.24rem .45rem; font-size:.68rem; font-weight:700; min-width:2.2rem; }
 .graph-seg button:last-child { border-right:0; }
-.graph-head-seg { margin-left:auto; }
+/* Measurements for what's in view, centred between the averaging buttons and
+   the legend: a bordered box, a shade lighter than the panel, with a row per
+   metric in its colour, columns Min / Max / Avg. */
+.graph-measure { margin:0 auto; display:inline-flex; padding:.3rem .6rem;
+  border:1px solid var(--border); border-radius:6px; background:var(--surface); }
+.graph-measure.off { visibility:hidden; }
+.graph-stats { display:grid; grid-template-columns:auto repeat(3, auto); column-gap:.8rem; row-gap:.22rem;
+  font-size:.68rem; line-height:1.15; font-variant-numeric:tabular-nums; text-align:right; }
+.graph-stats b { font-weight:700; color:var(--text-dim); }
+.graph-stats .gs-volts { color:var(--txt-blue); }
+.graph-stats .gs-ma { color:var(--success); }
+.graph-stats .gs-mw { color:var(--txt-pink); }
+/* Legend and Head indicator, at the right-hand end of the tools. */
+.graph-legend-key { display:inline-flex; align-items:center; gap:.35rem; font-size:.68rem; color:var(--text-muted); }
+.graph-swatch { display:inline-block; width:.9rem; height:.7rem; border-radius:2px; }
+.graph-swatch.missing { background:var(--danger); opacity:.35; }
+.graph-head-ind { display:inline-flex; align-items:center; gap:.35rem; font-size:.68rem; font-weight:700;
+  color:var(--text-dim); cursor:default; user-select:none; }
+.graph-head-dot { width:.55rem; height:.55rem; border-radius:50%; background:var(--border); }
+.graph-head-ind.on { color:var(--text); }
+.graph-head-ind.on .graph-head-dot { background:var(--success); box-shadow:0 0 0 2px color-mix(in srgb, var(--success) 30%, transparent); }
 .graph-seg button.on { background:var(--accent); color:var(--accent-on); }
 .graph-seg button.metric-v { color:var(--txt-blue); }
 .graph-seg button.metric-i { color:var(--success); }
@@ -530,6 +546,10 @@ const SHUNT_MA = 0.04 / 0.1;
 const EVENT_LABEL = { 1:'Power off', 2:'Power on', 3:'Removed', 4:'Inserted' };
 // Readings fetched for a port that's only shown as a mini graph: 10 seconds.
 const MINI_READINGS = 1000;
+// Mini graphs: the height (px) kept clear at the top for the labels, and the
+// lowest each scale's top can be.
+const MINI_LABEL_H = 12;
+const MINI_MIN_TOP = { volts:1, ma:10, mw:50 };
 // Shortest zoom: 1 second (100 readings, so a span of 99 counts). And how
 // close to a thumb edge (px) grabs the edge.
 const GRAPH_MIN_ZOOM = HIST_HZ - 1;
@@ -539,15 +559,26 @@ const GRAPH_EDGE_W = 6;
 const GRAPH_DRAG_PX = 6;
 // How close (px) either side of the cursor line grabs it.
 const GRAPH_CURSOR_HIT = 12;
+// Fitting a scale to what's in view leaves this much of the plot's height
+// empty above and below the line.
+const GRAPH_FIT_PAD = 0.125;
+// The highest value each Y scale can reach. The ports are a fixed 5 V supply,
+// so 6 V. Current: the most the history can store, ±1638 mA (13-bit shunt,
+// 40 uV steps, 0.1 ohm shunt), plus 10%. Power: the two multiplied.
+const GRAPH_Y_MAX = { volts:6, ma:1638 * 1.1, mw:6 * 1638 * 1.1 };
 const graphCfg = { metric: 'volts,ma,mw', vzero: false };
-let graphAveraging = 0;      // the profiler averaging setting: 0, 2, 4 or 8
+let graphAveraging = 0;      // the profiler averaging setting: 0, 2, 4, 8 or 16
 let graphAveragingSetAt = -1e9;
 let graphZoom = null;        // null = everything held, or { a, b, head }: the capture counts shown,
                              // and whether it follows the newest reading
 let graphCursor = null;      // the cursor's capture count
 let graphCursorAge = 0;      // its distance back from the view's newest end, in readings
 let graphDrag = null;        // a zoom selection, zoom arrow or scrollbar thumb being dragged
-let graphLockedRanges = {};  // y ranges set by scrolling over a scale
+let graphLockedRanges = {};  // y ranges set on a scale column: { min, max } per metric
+let graphVisible = {};       // per metric, what the last draw showed: { min, max, avg }
+let graphScaleHover = '';    // the scale column under the pointer
+let graphClickTimer = null;  // a single click on the V column, waiting to see if it's a double-click
+let graphNoClick = false;    // the button-up just ended a drag: ignore the click that follows
 let graphNoHistory = false;  // the hub has no PSRAM history
 // What clicking a port shows: 'schedule' or 'history' (the top bar buttons).
 let viewMode = 'schedule';
@@ -840,22 +871,44 @@ function graphView(h) {
 function graphSetZoom(h, a, b) {
   graphZoom = { a:a, b:b, head:b >= h.hi };
 }
-// Head, on the right of the tools: moves the zoom to the newest reading and
-// keeps it there. Lit while the view follows the newest reading.
+// Right-hand end of the tools: a legend (for now just missing data), then the
+// Head indicator. Head isn't a control: it's lit while the view follows the
+// newest reading, which happens when showing everything, or when the brush
+// thumb's right edge is dragged to the end.
 function graphNav() {
-  return '<span class="graph-seg graph-head-seg"><button id="graph-head-btn" class="on" onclick="graphHead()"' +
-    ' title="Follow the newest reading">Head</button></span>';
+  return '<span class="graph-legend-key"><span class="graph-swatch missing"></span>Missing data</span>' +
+    '<span class="graph-head-ind on" id="graph-head-btn" title="Lit while the graph follows the newest reading">' +
+      '<span class="graph-head-dot"></span>Head</span>';
 }
-// The Head button.
-function graphHead() {
-  if (graphZoom) graphZoom.head = true;
-  drawGraph();
+// Measurements for what's in view: the lowest, highest and average of each
+// metric, one row each in its colour. Filled in by drawGraph(), and only shown
+// while zoomed in (hidden but keeping its space when showing everything).
+function graphStatsBlock() {
+  let out = '<span class="graph-measure off" id="graph-stats"><span class="graph-stats"><span></span><b>Min</b><b>Max</b><b>Avg</b>';
+  GRAPH_METRICS.forEach((k) => {
+    out += '<span class="gs-' + k + '">' + metricLabel(k) + '</span>' +
+      ['min', 'max', 'avg'].map((f) => '<span class="gs-' + k + '" id="gs-' + k + '-' + f + '">--</span>').join('');
+  });
+  return out + '</span></span>';
 }
-// Averaging: Off, or the average of each reading and the 1, 3 or 7 before it.
+function updateGraphStats() {
+  const box = $('graph-stats');
+  if (box) box.classList.toggle('off', !graphZoom);
+  GRAPH_METRICS.forEach((k) => {
+    const seen = graphVisible[k];
+    ['min', 'max', 'avg'].forEach((f) => {
+      const el = $('gs-' + k + '-' + f);
+      if (!el) return;
+      const n = seen ? seen[f] : NaN;
+      el.textContent = isFinite(n) ? (k === 'volts' ? n.toFixed(3) : n.toFixed(1)) : '--';
+    });
+  });
+}
+// Averaging: Off, or the average of each reading and the 1, 3, 7 or 15 before it.
 // The same setting as the port cards' averaging.
 function graphAveragingButtons() {
   let out = '<span class="graph-seg">';
-  [0, 2, 4, 8].forEach((a) => {
+  [0, 2, 4, 8, 16].forEach((a) => {
     out += '<button class="' + (graphAveraging === a ? 'on' : '') + '" onclick="setGraphAveraging(' + a + ')"' +
       ' title="Averaging">' + (a ? 'Avg ' + a : 'Off') + '</button>';
   });
@@ -885,10 +938,12 @@ function renderGraphPanel() {
       '<div class="graph-tools">' +
         graphMetricToggles() +
         graphAveragingButtons() +
+        graphStatsBlock() +
         graphNav() +
       '</div>' +
       '<div class="graph-canvas-wrap"><canvas class="graph-canvas" id="graph-canvas"' +
-        ' onmousedown="graphMouseDown(event)" onmousemove="graphHover(event)" ondblclick="graphZoomOut()"' +
+        ' onmousedown="graphMouseDown(event)" onmousemove="graphHover(event)" onmouseleave="graphLeave()"' +
+        ' ondblclick="graphDoubleClick(event)"' +
         ' onclick="graphCanvasClick(event)" onwheel="graphCanvasWheel(event)"></canvas></div>' +
       '<div class="graph-brush">' +
         '<div class="graph-sb" id="graph-sb"><div class="graph-sb-thumb" id="graph-sb-thumb"' +
@@ -949,7 +1004,21 @@ function graphHover(ev) {
   if (graphDrag) return;
   const c = $('graph-canvas');
   const p = graphPlotPos(ev);
-  c.style.cursor = graphOnCursor(p) ? 'ew-resize' : (graphInPlot(p) ? 'crosshair' : 'default');
+  const scale = graphScaleMetricAt(ev);
+  c.style.cursor = scale ? 'ns-resize' : (graphOnCursor(p) ? 'ew-resize' : (graphInPlot(p) ? 'crosshair' : 'default'));
+  if (scale !== graphScaleHover) { graphScaleHover = scale; drawGraph(); }
+}
+// Pointer left the canvas: no scale column is hovered.
+function graphLeave() {
+  if (graphScaleHover && !graphDrag) { graphScaleHover = ''; drawGraph(); }
+}
+// Double-click: on a scale column, fit that metric to what's in view; on the
+// plot, show all the history held again.
+function graphDoubleClick(ev) {
+  if (graphClickTimer) { clearTimeout(graphClickTimer); graphClickTimer = null; }
+  const metric = graphScaleMetricAt(ev);
+  if (metric) graphFitScale(metric);
+  else graphZoomOut();
 }
 // Button down on the plot: on the cursor line, start dragging it; anywhere
 // else, start what becomes a click or a zoom selection.
@@ -958,7 +1027,13 @@ function graphMouseDown(ev) {
   const v = graphView(h);
   if (!v || ev.button !== 0) return;
   const p = graphPlotPos(ev);
-  if (graphOnCursor(p)) graphDrag = { kind:'cursor', x:p.x, timer:setInterval(graphCursorEdge, 30) };
+  const scale = graphScaleMetricAt(ev);
+  if (scale) {
+    const range = metricRange(h, scale);
+    if (!range) return;
+    graphDrag = { kind:'yshift', key:scale, y0:p.y, dragging:false, min0:range.min, max0:range.max, gh:p.gh };
+  }
+  else if (graphOnCursor(p)) graphDrag = { kind:'cursor', x:p.x, timer:setInterval(graphCursorEdge, 30) };
   else if (graphInPlot(p)) graphDrag = { kind:'select', x0:p.x, y0:p.y, x1:p.x, dragging:false, v:v, p:p };
   else return;
   ev.preventDefault();
@@ -966,12 +1041,20 @@ function graphMouseDown(ev) {
   window.addEventListener('mouseup', graphMouseUp);
 }
 // Mouse moved with the button down: grow the zoom selection, once it has
-// moved far enough to be a drag, or move the cursor.
+// moved far enough to be a drag; move a scale up or down; or move the cursor.
 function graphMouseMove(ev) {
   const d = graphDrag, h = hist[graphPort];
   if (!d || !h) return;
   const p = graphPlotPos(ev);
-  if (d.kind === 'select') {
+  if (d.kind === 'yshift') {
+    // Dragging a scale column moves that metric's line with the pointer: both
+    // ends of its scale shift together, keeping its span.
+    if (!d.dragging && Math.abs(p.y - d.y0) < GRAPH_DRAG_PX) return;
+    d.dragging = true;
+    const shift = (p.y - d.y0) * (d.max0 - d.min0) / d.gh;
+    graphLockedRanges[d.key] = graphClampRange(d.key, d.min0 + shift, d.max0 + shift, true);
+  }
+  else if (d.kind === 'select') {
     if (!d.dragging && Math.hypot(p.x - d.x0, p.y - d.y0) < GRAPH_DRAG_PX) return;
     d.dragging = true;
     d.x1 = Math.max(p.pad.l, Math.min(p.pad.l + p.gw, p.x));
@@ -1013,6 +1096,7 @@ function graphMouseUp(ev) {
   window.removeEventListener('mousemove', graphMouseMove);
   window.removeEventListener('mouseup', graphMouseUp);
   if (d && d.timer) clearInterval(d.timer);
+  if (d && d.dragging) graphNoClick = true;
   // A click: move the cursor to where the button was let go.
   if (d && d.kind === 'select' && !d.dragging && h) {
     const p = graphPlotPos(ev);
@@ -1147,36 +1231,71 @@ function graphScaleMetricAt(ev) {
   }
   return '';
 }
-// Scroll over a y-scale column to adjust that metric's top level. Scroll over
-// the plot to zoom.
+// Scroll over a scale column to stretch or squash that metric's scale. The
+// top and bottom move together, around the metric's average over what's in
+// view, so the line stays put at that average. Scroll over the plot to zoom.
 function graphCanvasWheel(ev) {
   const metric = graphScaleMetricAt(ev);
   if (!metric) { graphWheelZoom(ev); return; }
   ev.preventDefault();
-  const auto = metricAutoRange(graphDataRange(hist[graphPort], metric), metric);
-  if (!auto) return;
-  if (!graphLockedRanges[metric])
-    graphLockedRanges[metric] = { min:auto.min, max:auto.max, step:auto.step };
-  const range = graphLockedRanges[metric];
-  const span = Math.max(range.step || auto.step || 1, range.max - range.min);
-  const dir = ev.deltaY < 0 ? 1 : -1;
-  const nextMax = range.max + dir * span * 0.08;
-  const minSpan = Math.max((range.step || auto.step || 1) * 0.5, Math.abs(range.min || 0) * 0.001, 0.001);
-  range.max = Math.max(range.min + minSpan, nextMax);
-  range.step = niceStep((range.max - range.min) / 4);
+  const range = metricRange(hist[graphPort], metric);
+  const seen = graphVisible[metric];
+  if (!range) return;
+  const mid = seen && isFinite(seen.avg) ? seen.avg : (range.min + range.max) / 2;
+  const f = Math.exp(ev.deltaY * 0.002);
+  const min = mid - (mid - range.min) * f, max = mid + (range.max - mid) * f;
+  if (max - min < 1e-6) return;
+  graphLockedRanges[metric] = graphClampRange(metric, min, max, false);
   drawGraph();
 }
-// Clicking the voltage scale toggles auto-zero for voltage on the large graph.
-function graphCanvasClick(ev) {
-  const p = graphPlotPos(ev);
-  const series = graphMetrics();
-  const hitVoltageScale = (series.includes('volts') && series.length > 1 && p.x <= 40) ||
-                          (series.length === 1 && series[0] === 'volts' && p.x <= p.pad.l);
-  if (!hitVoltageScale) return;
-  graphCfg.vzero = !graphCfg.vzero;
-  delete graphLockedRanges.volts;
+// Fit a metric's scale to what's in view: its lowest and highest values sit
+// GRAPH_FIT_PAD of the plot's height in from the bottom and top.
+function graphFitScale(metric) {
+  const seen = graphVisible[metric];
+  if (!seen || !isFinite(seen.min) || !isFinite(seen.max)) return;
+  let span = seen.max - seen.min;
+  if (span <= 0) span = Math.max(Math.abs(seen.max) * 0.02, metric === 'volts' ? 0.01 : 0.1);
+  const total = span / (1 - 2 * GRAPH_FIT_PAD);
+  const mid = (seen.min + seen.max) / 2;
+  graphLockedRanges[metric] = graphClampRange(metric, mid - total / 2, mid + total / 2, false);
   drawGraph();
-  saveProfilerPrefs();
+}
+// Keep a Y scale between 0 and GRAPH_Y_MAX, with GRAPH_FIT_PAD of the plot's
+// height to spare below 0 and above the top, so a line at a limit never sits
+// on the edge of the plot. keepSpan (moving a scale up or down) stops it at
+// either limit without changing its span; otherwise each end is cut back to
+// its limit.
+function graphClampRange(key, min, max, keepSpan) {
+  const top = GRAPH_Y_MAX[key];
+  const most = top / (1 - 2 * GRAPH_FIT_PAD);
+  if (keepSpan) {
+    const span = Math.min(most, max - min);
+    const spare = span * GRAPH_FIT_PAD;
+    if (min < -spare) { min = -spare; max = min + span; }
+    if (max > top + spare) { max = top + spare; min = max - span; }
+  } else {
+    const spare = Math.min(most, max - min) * GRAPH_FIT_PAD;
+    min = Math.max(-spare, min);
+    max = Math.min(top + spare, max);
+  }
+  if (max <= min) max = Math.min(top, min + 1e-3);
+  if (max <= min) min = max - 1e-3;
+  return { min:min, max:max };
+}
+// A single click on the voltage scale toggles auto-zero for voltage. It waits
+// to see whether a second click makes it a double-click, and is ignored
+// straight after a drag.
+function graphCanvasClick(ev) {
+  if (graphNoClick) { graphNoClick = false; return; }
+  if (ev.detail > 1 || graphScaleMetricAt(ev) !== 'volts') return;
+  if (graphClickTimer) clearTimeout(graphClickTimer);
+  graphClickTimer = setTimeout(() => {
+    graphClickTimer = null;
+    graphCfg.vzero = !graphCfg.vzero;
+    delete graphLockedRanges.volts;
+    drawGraph();
+    saveProfilerPrefs();
+  }, 300);
 }
 // Short unit label for a graph metric.
 function metricLabel(key) {
@@ -1223,7 +1342,9 @@ function metricAutoRange(mm, key) {
 // Y-axis range for one metric: from all the history held, or as set by
 // scrolling over its scale.
 function metricRange(h, key) {
-  return graphLockedRanges[key] || metricAutoRange(graphDataRange(h, key), key);
+  if (graphLockedRanges[key]) return graphLockedRanges[key];
+  const auto = metricAutoRange(graphDataRange(h, key), key);
+  return auto ? graphClampRange(key, auto.min, auto.max, false) : null;
 }
 // Time-axis label: how long before the newest reading.
 function graphAgeLabel(seconds) {
@@ -1235,39 +1356,79 @@ function graphAgeLabel(seconds) {
 // The points to draw for the readings from capture count a to b, across gw
 // pixels. With averaging on, each reading is first averaged with the ones
 // before it, like the port cards.
-//  - More readings than pixels: one point per pixel column, with the average
-//    of the readings in it, and their lowest and highest, so spikes show. A
-//    column with no readings breaks the line.
+//  - More readings than pixels: one point per block of readings about a pixel
+//    wide, with their average, lowest and highest, so spikes show. A block with
+//    no readings breaks the line.
 //  - Fewer: one point per reading. A missing reading breaks the line.
-function graphPoints(h, a, b, gw) {
+// The capture-count ranges [first, last] the port was switched off, from its
+// power off / power on events. Readings missing while it was off aren't
+// missing data: nothing was expected. Before the first power event, the port's
+// state is taken from that event (a power on means it was off before); with no
+// power events at all, from whether it's on now.
+function graphOffRanges(h, n) {
+  const ev = h.events.filter((e) => e.code === 1 || e.code === 2);
+  const wasOn = ev.length ? ev[0].code === 1 : portEnabled(n);
+  const out = [];
+  let from = wasOn ? null : -Infinity;
+  ev.forEach((e) => {
+    if (e.code === 1 && from === null) from = e.c;
+    else if (e.code === 2 && from !== null) { out.push([from, e.c - 1]); from = null; }
+  });
+  if (from !== null) out.push([from, Infinity]);
+  return out;
+}
+function graphPoints(h, a, b, gw, off) {
   const cols = Math.max(1, Math.round(gw));
   const span = b - a + 1;
   const dense = span > cols;
-  const max = dense ? cols : span;
-  const out = { n:0, dense:dense, x:new Float32Array(max), brk:new Uint8Array(max) };
+  // Dense: readings are grouped in blocks of a whole number of readings, lined
+  // up on the capture count, so a block holds the same readings from one draw
+  // to the next as the view moves. Its point sits at the block's middle.
+  const per = dense ? Math.ceil(span / cols) : 1;
+  const max = dense ? Math.ceil(span / per) + 2 : span;
+  // gaps: [start x, end x] of each run of missing readings in view, from the
+  // reading before it to the reading after it.
+  // count/sum: every reading in view, for the exact average.
+  const out = { n:0, dense:dense, x:new Float32Array(max), brk:new Uint8Array(max), gaps:[],
+    count:0, sumV:0, sumI:0, sumP:0 };
   ['v', 'i', 'p'].forEach((m) => {
     out[m] = new Float32Array(max); out[m + 'Lo'] = new Float32Array(max); out[m + 'Hi'] = new Float32Array(max);
   });
+  const xScale = b > a ? gw / (b - a) : 0;
   const V = h.v, I = h.ma;
   const avg = Math.max(1, graphAveraging);
   const bv = new Float64Array(avg), bi = new Float64Array(avg), bp = new Float64Array(avg);
-  let nb = 0, at = 0, sv = 0, si = 0, sp = 0, gap = true;
-  let col = -1, cn = 0, cv = 0, ci = 0, cp = 0, lastCol = -2;
+  let nb = 0, at = 0, sv = 0, si = 0, sp = 0, gap = true, gapFrom = -1;
+  let offAt = 0;  // the first off range that hasn't ended before c
+  let blk = -1, cn = 0, cv = 0, ci = 0, cp = 0, lastBlk = -2;
   let vLo = 0, vHi = 0, iLo = 0, iHi = 0, pLo = 0, pHi = 0;
   const flush = () => {
     if (!cn) return;
     const k = out.n++;
-    out.x[k] = (col + 0.5) * gw / cols;
+    out.x[k] = (blk * per + (per - 1) / 2 - a) * xScale;
     out.v[k] = cv / cn; out.i[k] = ci / cn; out.p[k] = cp / cn;
     out.vLo[k] = vLo; out.vHi[k] = vHi; out.iLo[k] = iLo; out.iHi[k] = iHi; out.pLo[k] = pLo; out.pHi[k] = pHi;
-    out.brk[k] = col !== lastCol + 1 ? 1 : 0;
-    lastCol = col;
+    out.brk[k] = blk !== lastBlk + 1 ? 1 : 0;
+    lastBlk = blk;
     cn = 0; cv = 0; ci = 0; cp = 0;
   };
-  for (let c = Math.max(h.lo, a - avg + 1); c <= b; c++) {
+  // Dense: start at the first reading of the block the view starts in, so the
+  // left-most block is complete too.
+  const from = dense ? Math.floor(a / per) * per : a;
+  for (let c = Math.max(h.lo, from - avg + 1); c <= b; c++) {
     const k = c % HIST_SLOTS;
     const v = V[k];
-    if (v !== v) { nb = 0; at = 0; sv = 0; si = 0; sp = 0; gap = true; continue; }
+    if (v !== v) {
+      nb = 0; at = 0; sv = 0; si = 0; sp = 0; gap = true;
+      while (off && offAt < off.length && off[offAt][1] < c) offAt++;
+      const portOff = off && offAt < off.length && off[offAt][0] <= c;
+      if (portOff) {
+        // Switched off: not missing data. Close any missing run before it.
+        if (gapFrom >= 0) { out.gaps.push([Math.max(0, (gapFrom - 1 - a) * xScale), (c - a) * xScale]); gapFrom = -1; }
+      } else if (c >= a && gapFrom < 0) gapFrom = c;
+      continue;
+    }
+    if (gapFrom >= 0) { out.gaps.push([Math.max(0, (gapFrom - 1 - a) * xScale), (c - a) * xScale]); gapFrom = -1; }
     const i = I[k], p = v * i;
     let mv = v, mi = i, mp = p;
     if (avg > 1) {
@@ -1277,12 +1438,13 @@ function graphPoints(h, a, b, gw) {
       if (++at === avg) at = 0;
       mv = sv / nb; mi = si / nb; mp = sp / nb;
     }
-    if (c < a) continue;
+    if (c < from) continue;
+    if (c >= a) { out.count++; out.sumV += mv; out.sumI += mi; out.sumP += mp; }
     if (dense) {
-      const cc = Math.min(cols - 1, Math.floor((c - a) * cols / span));
-      if (cc !== col) {
+      const bb = Math.floor(c / per);
+      if (bb !== blk) {
         flush();
-        col = cc;
+        blk = bb;
         vLo = vHi = mv; iLo = iHi = mi; pLo = pHi = mp;
       } else {
         if (mv < vLo) vLo = mv; else if (mv > vHi) vHi = mv;
@@ -1292,13 +1454,14 @@ function graphPoints(h, a, b, gw) {
       cn++; cv += mv; ci += mi; cp += mp;
     } else {
       const k2 = out.n++;
-      out.x[k2] = span > 1 ? (c - a) * gw / (span - 1) : gw / 2;
+      out.x[k2] = (c - a) * xScale;
       out.v[k2] = mv; out.i[k2] = mi; out.p[k2] = mp;
       out.brk[k2] = gap ? 1 : 0;
     }
     gap = false;
   }
   if (dense) flush();
+  if (gapFrom >= 0) out.gaps.push([Math.max(0, (gapFrom - 1 - a) * xScale), (b - a) * xScale]);
   return out;
 }
 // One metric's value at a capture count, averaged the same way as the graph.
@@ -1372,9 +1535,43 @@ function drawGraph() {
 
   // Each metric: the lowest-to-highest range of each pixel column, faint, then
   // the average line over it.
-  const pts = graphPoints(h, v.a, v.b, gw);
+  const pts = graphPoints(h, v.a, v.b, gw, graphOffRanges(h, graphPort));
+  // What's in view, per metric: lowest, highest and average. Shown in the
+  // measurements, and used to fit a scale (double-click) and to centre scale
+  // stretching (scroll).
+  graphVisible = {};
+  GRAPH_METRICS.forEach((key) => {
+    const m = key === 'volts' ? 'v' : (key === 'ma' ? 'i' : 'p');
+    let min = Infinity, max = -Infinity;
+    for (let k = 0; k < pts.n; k++) {
+      const lo = pts.dense ? pts[m + 'Lo'][k] : pts[m][k], hi = pts.dense ? pts[m + 'Hi'][k] : pts[m][k];
+      if (lo < min) min = lo;
+      if (hi > max) max = hi;
+    }
+    const sum = m === 'v' ? pts.sumV : (m === 'i' ? pts.sumI : pts.sumP);
+    graphVisible[key] = { min:min, max:max, avg:pts.count ? sum / pts.count : NaN };
+  });
+  updateGraphStats();
+  // The hovered scale column gets a tint.
+  if (graphScaleHover && series.some((s) => s.k === graphScaleHover)) {
+    const idx = series.findIndex((s) => s.k === graphScaleHover);
+    const x0 = series.length === 1 ? 0 : 2 + idx * 34;
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = cs.getPropertyValue(metricColor(graphScaleHover)).trim();
+    ctx.fillRect(x0, pad.t, series.length === 1 ? pad.l - 4 : 34, gh);
+    ctx.globalAlpha = 1;
+  }
   ctx.save();
   ctx.beginPath(); ctx.rect(pad.l, pad.t, gw, gh); ctx.clip();
+  // Missing readings: a faint red background across each run, at least a pixel
+  // wide, so a gap in the line reads as missing data. Time the port was
+  // switched off isn't shaded.
+  if (pts.gaps.length) {
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = cs.getPropertyValue('--danger').trim();
+    pts.gaps.forEach((g) => ctx.fillRect(pad.l + g[0], pad.t, Math.max(1, g[1] - g[0]), gh));
+    ctx.globalAlpha = 1;
+  }
   series.forEach((s) => {
     const range = metricRange(h, s.k);
     if (!range) return;
@@ -1406,19 +1603,26 @@ function drawGraph() {
   });
 
   // Events: a dashed line with an arrow and a label where each one happened.
+  // Labels that would overlap stack downwards, each in the first row where it
+  // fits, so close events stay readable.
   const evColor = cs.getPropertyValue('--warning').trim();
   ctx.strokeStyle = evColor; ctx.fillStyle = evColor; ctx.lineWidth = 1;
-  ctx.setLineDash([3, 3]);
+  const rowEnds = [];
   h.events.forEach((e) => {
     if (e.c < v.a || e.c > v.b) return;
     const x = graphXOf(v, e.c, pp);
+    ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(x, pad.t + 6); ctx.lineTo(x, pad.t + gh); ctx.stroke();
+    ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(x - 4, pad.t); ctx.lineTo(x + 4, pad.t); ctx.lineTo(x, pad.t + 6); ctx.closePath(); ctx.fill();
     const label = EVENT_LABEL[e.code] || ('Event ' + e.code);
     const tw = ctx.measureText(label).width;
-    ctx.fillText(label, x + 6 + tw > pad.l + gw ? x - 6 - tw : x + 6, pad.t + 9);
+    const lx = x + 6 + tw > pad.l + gw ? x - 6 - tw : x + 6;
+    let row = rowEnds.findIndex((end) => lx > end + 4);
+    if (row < 0) row = rowEnds.length;
+    rowEnds[row] = lx + tw;
+    ctx.fillText(label, lx, pad.t + 9 + row * 12);
   });
-  ctx.setLineDash([]);
 
   // The span being dragged out to zoom to.
   const accent = cs.getPropertyValue('--accent').trim();
@@ -1437,6 +1641,19 @@ function drawGraph() {
   ctx.beginPath(); ctx.moveTo(cx, pad.t); ctx.lineTo(cx, pad.t + gh); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx - 6, pad.t - 10); ctx.lineTo(cx + 6, pad.t - 10); ctx.lineTo(cx, pad.t); ctx.closePath(); ctx.fill();
   const val = graphValueAt(h, graphCursor);
+  // A dot on each metric's line where the cursor crosses it.
+  if (val) {
+    const bg = cs.getPropertyValue('--bg').trim();
+    series.forEach((s) => {
+      if (!s.range) return;
+      const y = pad.t + gh - (val[s.k] - s.range.min) * gh / (s.range.max - s.range.min);
+      if (y < pad.t || y > pad.t + gh) return;
+      ctx.beginPath(); ctx.arc(cx, y, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = cs.getPropertyValue(metricColor(s.k)).trim(); ctx.fill();
+      ctx.lineWidth = 1.5; ctx.strokeStyle = bg; ctx.stroke();
+    });
+    ctx.lineWidth = 1;
+  }
   const lines = [{ t:graphClockLabel(h, graphCursor) + '  ' + graphAgeLabel((h.hi - graphCursor) / HIST_HZ), c:fg }];
   series.forEach((s) => {
     const n = val ? val[s.k] : null;
@@ -1447,7 +1664,7 @@ function drawGraph() {
   const bw = Math.max(...lines.map((l) => ctx.measureText(l.t).width)) + 12, bh = lines.length * 15 + 8;
   const bx = cx + 8 + bw > pad.l + gw ? cx - 8 - bw : cx + 8, by = pad.t + 4;
   ctx.fillStyle = cs.getPropertyValue('--surface').trim(); ctx.strokeStyle = cs.getPropertyValue('--border').trim();
-  ctx.fillRect(bx, by, bw, bh); ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+  ctx.beginPath(); ctx.roundRect(bx + 0.5, by + 0.5, bw - 1, bh - 1, 4); ctx.fill(); ctx.stroke();
   lines.forEach((l, i) => { ctx.fillStyle = l.c; ctx.fillText(l.t, bx + 6, by + 16 + i * 15); });
   ctx.font = '10px system-ui';
 
@@ -2417,6 +2634,9 @@ function drawMiniGraph(n) {
   });
   if (off) { min = 0; max = miniMetric === 'volts' ? 5 : 1; }
   if (min >= 0) min = 0;
+  // A minimum top, so a tiny reading (a fraction of a mA or mW) draws as a low
+  // line instead of being stretched to the full height.
+  max = Math.max(max, MINI_MIN_TOP[miniMetric]);
   if (min === max) {
     const pad = miniMetric === 'volts' ? 0.05 : Math.max(1, Math.abs(max) * 0.1);
     min -= pad; max += pad;
@@ -2427,10 +2647,12 @@ function drawMiniGraph(n) {
   max = Math.ceil(max / step) * step;
   if (min === max) max = min + step;
   ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, ht - 1); ctx.lineTo(w, ht - 1); ctx.stroke();
+  // The line is drawn below the labels' row, so it never runs through them.
+  const top = MINI_LABEL_H, bottom = ht - 2;
   ctx.strokeStyle = line; ctx.lineWidth = 1.5; ctx.beginPath();
   pts.forEach((v, i) => {
     const x = w * i / (pts.length - 1);
-    const y = ht - 2 - (ht - 5) * ((v - min) / (max - min));
+    const y = bottom - (bottom - top) * ((v - min) / (max - min));
     if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
   });
   ctx.stroke();
@@ -2658,7 +2880,7 @@ function applyStatus(d) {
   applyUiPrefs(d.ui);
   // The averaging setting, unless the graph's buttons changed it in the last
   // 2 s and the hub's reply may not show it yet.
-  if (d.ui && [0, 2, 4, 8].includes(+d.ui.averaging) && performance.now() - graphAveragingSetAt > 2000 &&
+  if (d.ui && [0, 2, 4, 8, 16].includes(+d.ui.averaging) && performance.now() - graphAveragingSetAt > 2000 &&
       +d.ui.averaging !== graphAveraging) {
     graphAveraging = +d.ui.averaging;
     if (graphPort) renderGraphPanel();

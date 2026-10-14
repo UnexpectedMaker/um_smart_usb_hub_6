@@ -53,6 +53,7 @@ temperature, total current draw and more.
 | Read the hub as a whole (power, temperature, clock, network) | [`GET /api/hub`](#get-apihub) |
 | Read all six ports | [`GET /api/ports`](#get-apiports) |
 | Read one port in detail, with its schedule | [`GET /api/ports/{n}`](#get-apiportsn) |
+| Read a port's voltage, current and power history (up to 60 minutes at 100 Hz) | [`GET /api/ports/{n}/history`](#get-apiportsnhistory) |
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
 | Set each port's power mode: manual, on at boot, or on while a device is plugged in | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_mode":[...]}}` |
@@ -112,6 +113,7 @@ apply nothing. See *Current limitations*.
 | `GET` | `/api/ports` | State of all six ports |
 | `GET` | `/api/ports/{n}` | One port in detail, including its schedule |
 | `GET` | `/api/ports/{n}/schedule` | One port's schedule |
+| `GET` | `/api/ports/{n}/history` | One port's 100 Hz samples, as JSON, in 10-minute pages |
 | `GET` | `/api/status` | Combined payload backing the web UI |
 | `GET` | `/api/history` | One page of a port's 100 Hz readings and events from PSRAM, in binary, for the web UI |
 | `GET` | `/api/environment/history` | PSRAM-backed temperature/humidity trend samples for the web UI |
@@ -489,6 +491,57 @@ Empty schedule:
 ```
 
 `404` with `{ "error": "not found" }` if `n` is outside `1..6`.
+
+---
+
+## GET `/api/ports/{n}/history`
+
+One port's voltage, current and power history from the hub's PSRAM history.
+The hub records every port every 10 ms (100 Hz) and keeps the newest 60
+minutes. It's lost when the hub restarts.
+
+The history comes in pages of 10 minutes (60,000 samples). Page 1 is the
+newest 10 minutes, page 2 the 10 minutes before that, and so on, back to the
+oldest sample. The pages count back from the newest sample at the moment each
+page is asked for, so pages fetched a while apart overlap by the time between
+them.
+
+| Param | Values | Default |
+|---|---|---|
+| `page` | `1` or more | `1` |
+
+```
+curl 'http://192.168.1.100/api/ports/6/history'
+curl 'http://192.168.1.100/api/ports/6/history?page=2'
+```
+
+```json
+{
+  "port": 6,
+  "page": 1,
+  "pages": 6,
+  "count": 60000,
+  "samples": [ [5.208, 51.6, 268.7], null, [5.216, 51.2, 267.1] ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `page` | The page returned |
+| `pages` | How many pages there are. A page after the last has `count` `0` |
+| `count` | How many samples this page has |
+| `samples` | 10 ms apart, oldest first: `[volts, mA, mW]`, or `null` where there's no reading (port off, no monitor, failed read) |
+
+A full page is about 1.3 MB of JSON. To save every page:
+
+```bash
+pages=$(curl -s 'http://192.168.1.100/api/ports/6/history' | tee port6_page1.json | jq .pages)
+for p in $(seq 2 $pages); do
+  curl -s "http://192.168.1.100/api/ports/6/history?page=$p" > port6_page$p.json
+done
+```
+
+`400` for a bad page number. `503` if the hub has no PSRAM history.
 
 ---
 
@@ -888,11 +941,7 @@ curl http://192.168.1.100/api/settings/schema
         "graph_window": 10, "graph_scale": "linear",
         "graph_voltage_zero": false, "graph_y_lock": false
       },
-      "fields": [
-        { "type": "choice", "key": "averaging", "label": "Profiler averaging",
-          "help": "Newest sample, or mean of the newest 2, 4 or 8 samples",
-          "options": ["0", "2", "4", "8"] }
-      ]
+      "fields": []
     }
   ]
 }
@@ -909,10 +958,10 @@ curl http://192.168.1.100/api/settings/schema
   `value`. Turning a port on in one row turns the same port off in the others;
   a port on in no row is `"manual"`, shown as **M** in the group heading.
 - `profiler.averaging` controls the INA profiler output: `0` returns the newest
-  sample, while `2`, `4` or `8` returns the mean of that many newest samples.
-- The `profiler` group's graph preferences (`mini_graphs` through
-  `graph_y_lock`) are in `values` but have no `fields`: they're set by the web
-  UI's graph controls, not the Settings panel. `mini_graphs`, `graph_window`,
+  sample, while `2`, `4`, `8` or `16` returns the mean of that many newest samples.
+- The `profiler` group has no `fields`, so the Settings panel doesn't show it.
+  Its values, `averaging` included, are set by the web UI's graph controls,
+  and saved to flash once they've gone unchanged for 3 seconds. `mini_graphs`, `graph_window`,
   `graph_scale` and `graph_y_lock` are historical: the web UI no longer uses
   them, and they'll be removed.
 - `power_mode` is one value per port:

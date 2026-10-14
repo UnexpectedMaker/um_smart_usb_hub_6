@@ -339,6 +339,9 @@ public:
     // is tidied — control characters turned into spaces, surrounding spaces
     // trimmed, cut to PORT_NAME_MAX characters.
     void fromJson(const nlohmann::json &j) override;
+    // After an edit, switch on any port its new power mode says should be on
+    // now (applyPowerModes() in main.cpp).
+    void onConfigChanged() override;
 };
 extern PortsSettings g_ports;
 
@@ -368,8 +371,8 @@ extern WebsiteSettings g_website;
 
 // ===========================================================================
 // profiler — the port profiler's options, and the web UI's graph view
-// preferences. Averaging is in the Settings drawer; the graph preferences are
-// set by the graph controls and aren't shown there.
+// preferences. None are in the Settings drawer: the averaging is set by the
+// graph's averaging buttons, the rest by the other graph controls.
 // ===========================================================================
 // How long the profiler settings must go unchanged before they're saved to
 // flash, so a burst of graph clicks becomes one write.
@@ -377,7 +380,7 @@ extern WebsiteSettings g_website;
 
 struct HubProfilerConfig
 {
-    uint8_t averaging = 0;         // newest sample only, or average newest 2 | 4 | 8
+    uint8_t averaging = 0;         // newest sample only, or average newest 2 | 4 | 8 | 16
     String mini_metric = "ma";     // "ma" | "mw" | "volts"
     String graph_metric = "volts,ma,mw"; // comma-separated subset of "volts", "ma", "mw"
     bool graph_voltage_zero = false;
@@ -400,11 +403,11 @@ class ProfilerSettings : public HubSettingsT<HubProfilerConfig>
 public:
     const char *name() const override { return "profiler"; }
     const char *label() const override { return "Profiler"; }
-    // Averaging. The graph preferences aren't listed.
+    // Empty: nothing in this group is shown in the Settings drawer.
     std::vector<HubSettingField> uiSchema() override;
 
     // Loads as usual, then puts any unsupported value back to its default:
-    // averaging not 0, 2, 4 or 8; unknown metrics, window or scale.
+    // averaging not 0, 2, 4, 8 or 16; unknown metrics, window or scale.
     void fromJson(const nlohmann::json &j) override;
     // Applies the averaging to the running profiler.
     void onConfigChanged() override;

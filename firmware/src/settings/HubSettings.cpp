@@ -19,6 +19,7 @@ static const char *SETTINGS_DIR = "/settings";           // one <group>.json per
 static const char *OLD_SETTINGS_FILE = "/settings.json"; // firmware 1.0.0: all groups in one file
 
 extern bool profilerSetAveraging(int samples);
+extern void applyPowerModes();
 
 // ---- HubRegistry ---------------------------------------------------------
 
@@ -428,6 +429,13 @@ void PortsSettings::fromJson(const nlohmann::json &j)
         name = cleanPortName(name);
 }
 
+// A power mode set while the hub is running takes effect straight away: a
+// "boot" port, or a "connect" port with a device plugged in, comes on now.
+void PortsSettings::onConfigChanged()
+{
+    applyPowerModes();
+}
+
 // ===========================================================================
 // website
 // ===========================================================================
@@ -460,20 +468,20 @@ void WebsiteSettings::setTheme(const String &theme)
 // profiler
 // ===========================================================================
 
+// Nothing in the Settings drawer: the averaging is set by the graph's
+// averaging buttons, and the graph preferences by the other graph controls.
+// They all come in through POST /api/settings, which saves this group with the
+// PROFILER_SAVE_DELAY_MS delay (requestSave()).
 std::vector<HubSettingField> ProfilerSettings::uiSchema()
 {
-    return {
-        {.type = F::T::Choice, .key = "averaging", .label = "Profiler averaging",
-         .help = "Newest sample, or mean of the newest 2, 4 or 8 samples",
-         .options = "0,2,4,8"},
-    };
+    return {};
 }
 
 // Clamp profiler options and graph preferences after loading from flash or
 // /api/settings.
 static void sanitizeProfiler(HubProfilerConfig &c)
 {
-    if (c.averaging != 0 && c.averaging != 2 && c.averaging != 4 && c.averaging != 8)
+    if (c.averaging != 0 && c.averaging != 2 && c.averaging != 4 && c.averaging != 8 && c.averaging != 16)
         c.averaging = 0;
     if (!oneOf(c.mini_metric, {"ma", "mw", "volts"}))
         c.mini_metric = "ma";

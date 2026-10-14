@@ -68,10 +68,11 @@ PortHistory::Reading unpack(const uint8_t *p)
 }
 
 // Allocate the zeroed (all invalid) history and event lists in PSRAM.
-bool PortHistory::begin()
+bool PortHistory::begin(ConvertFn convert)
 {
     if (available())
         return true;
+    _convert = convert;
 
     size_t bytes = (size_t)HUB_NUM_PORTS * SAMPLES * SAMPLE_BYTES;
     _samples = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -196,6 +197,8 @@ bool PortHistory::page(uint8_t port, PageFrom from, uint32_t count, uint32_t mos
         most = PAGE_SAMPLES;
     State s = state();
     uint32_t first = 0, n = 0;
+    out.hasData = s.hasData;
+    out.oldest = out.newest = 0;
     if (s.hasData)
     {
         // The oldest reading held that isn't about to be overwritten.
@@ -203,6 +206,8 @@ bool PortHistory::page(uint8_t port, PageFrom from, uint32_t count, uint32_t mos
         uint32_t safe = s.writeTo - SAMPLES + 1;
         if ((int32_t)(safe - oldest) > 0)
             oldest = safe;
+        out.oldest = oldest;
+        out.newest = s.newest;
 
         if (from == PAGE_AFTER && (int32_t)(count - s.newest) < 0)
         {
@@ -297,4 +302,97 @@ void PortHistory::readRaw(uint8_t port, uint32_t first, uint32_t n, uint8_t *out
     uint32_t limit = writeTo - SAMPLES + 1;
     if ((int32_t)(limit - lo) > 0)
         memset(dst, 0, (size_t)min(limit - lo, m) * SAMPLE_BYTES);
+}
+
+// ---- JSON history (REST API) ------------------------------------------------
+//   {"port":6,"page":1,"pages":6,"count":60000,"samples":[[volts,mA,mW],null,...]}
+// page 1 is the newest 10 minutes, counting back from the newest reading when
+// the page is asked for; pages is how many there are. Samples are 10 ms apart,
+// oldest first; null where there's no reading.
+
+// Work out which readings page `pageNo` covers, plan them with page(), and
+// build everything before the samples.
+bool PortHistory::jsonPage(uint8_t port, uint32_t pageNo, JsonPage &out) const
+{
+    if (!available() || port >= HUB_NUM_PORTS || pageNo < 1)
+        return false;
+    State s = state();
+    uint32_t pages = 0, end = 0;
+    if (s.hasData)
+    {
+        uint32_t oldest = s.newest - s.filled + 1;
+        uint32_t safe = s.writeTo - SAMPLES + 1;
+        if ((int32_t)(safe - oldest) > 0)
+            oldest = safe;
+        uint32_t held = s.newest - oldest + 1;
+        pages = (held + PAGE_SAMPLES - 1) / PAGE_SAMPLES;
+        end = s.newest - (pageNo - 1) * PAGE_SAMPLES;
+    }
+    if (pageNo <= pages)
+    {
+        // The readings up to `end`, at most PAGE_SAMPLES of them.
+        if (!page(port, PAGE_BEFORE, end + 1, PAGE_SAMPLES, out.page))
+            return false;
+    }
+    else
+    {
+        out.page = {};
+    }
+    out.port = port;
+    out.headSent = 0;
+    out.next = 0;
+    out.done = false;
+    String &h = out.head;
+    h = "{\"port\":" + String(port + 1);
+    h += ",\"page\":" + String(pageNo);
+    h += ",\"pages\":" + String(pages);
+    h += ",\"count\":" + String(out.page.readings);
+    h += ",\"samples\":[";
+    return true;
+}
+
+// Write the head, then the readings a block at a time (copied out of PSRAM
+// with readRaw(), so overwritten readings come out as null), then "]}".
+size_t PortHistory::jsonChunk(JsonPage &jp, uint8_t *buf, size_t len) const
+{
+    constexpr size_t MAX_READING_TEXT = 40; // "[8.184,-1638.4,-13409.6]," with room to spare
+    size_t used = 0;
+    if (jp.headSent < jp.head.length())
+    {
+        size_t n = min(len, jp.head.length() - jp.headSent);
+        memcpy(buf, jp.head.c_str() + jp.headSent, n);
+        jp.headSent += n;
+        return n;
+    }
+    while (jp.next < jp.page.readings && len - used >= MAX_READING_TEXT)
+    {
+        uint8_t raw[32 * SAMPLE_BYTES];
+        uint32_t block = min<uint32_t>(32, jp.page.readings - jp.next);
+        block = min<uint32_t>(block, (len - used) / MAX_READING_TEXT);
+        readRaw(jp.port, jp.page.first + jp.next, block, raw);
+        for (uint32_t k = 0; k < block; k++)
+        {
+            Reading r = unpack(raw + k * SAMPLE_BYTES);
+            const char *comma = (jp.next + k) ? "," : "";
+            int n;
+            if (!r.valid)
+                n = snprintf((char *)buf + used, len - used, "%snull", comma);
+            else
+            {
+                float volts = 0.0f, ma = 0.0f;
+                if (_convert)
+                    _convert(jp.port, r.bus, r.shunt, volts, ma);
+                n = snprintf((char *)buf + used, len - used, "%s[%.3f,%.1f,%.1f]", comma, volts, ma, volts * ma);
+            }
+            used += n;
+        }
+        jp.next += block;
+    }
+    if (jp.next >= jp.page.readings && !jp.done && len - used >= 2)
+    {
+        buf[used++] = ']';
+        buf[used++] = '}';
+        jp.done = true;
+    }
+    return used;
 }

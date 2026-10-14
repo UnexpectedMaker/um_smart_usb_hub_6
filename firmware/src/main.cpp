@@ -48,7 +48,7 @@
 #include "history/PortHistory.h"
 
 // Firmware version, reported by the web UI, the API and 'info'.
-#define HUB_FW_VERSION "1.1.0"
+#define HUB_FW_VERSION "2.0.0"
 
 #define NUM_PORTS HUB_NUM_PORTS
 
@@ -186,6 +186,20 @@ bool expanderConnected()
     return ioex.connected();
 }
 
+// Start an AHT20 measurement: just the trigger command. The library's
+// requestData() checks the sensor's status first (with a 1 ms delay) and, if
+// it isn't ready, resets it (about 70 ms of delays), all while the caller holds
+// the I2C bus, which made the profiler miss readings. That check and reset is
+// done once at boot instead.
+bool ahtTrigger()
+{
+    Wire.beginTransmission(aht.getAddress());
+    Wire.write(0xAC);
+    Wire.write(0x33);
+    Wire.write(0x00);
+    return Wire.endTransmission() == 0;
+}
+
 // ---- Port profiling ----
 // profilerStart(), called once from setup(), starts the task that runs for as
 // long as the hub is on. It reads every powered port at 100 Hz
@@ -193,12 +207,13 @@ bool expanderConnected()
 // one slot per port. It's the only thing that writes the history, and it
 // records the port events (power off/on, device removed/inserted) at the
 // period they're seen. profilerGetPort() returns a port's newest reading from
-// the history, or the average of its newest 2, 4 or 8 (profilerSetAveraging());
+// the history, or the average of its newest 2, 4, 8 or 16 (profilerSetAveraging());
 // if the profiler isn't running (no PSRAM history) it reads the port directly.
 // HISTORICAL: PROFILE_HZ is no longer used by the code (the rate is
 // PortHistory::SAMPLE_HZ); kept for now, to be removed.
 #define PROFILE_HZ PortHistory::SAMPLE_HZ
-#define PROFILE_LOOKBACK 8 // newest slots profilerGetPort() looks at: room for an 8 average
+#define PROFILE_LOOKBACK 16 // newest slots profilerGetPort() looks at: room for a 16 average
+#define PROFILE_PRIORITY 15 // profiler task priority: see profilerStart()
 
 // One reading as profilerGetPort() returns it: bus volts, milliamps, and
 // milliwatts (V x mA).
@@ -209,6 +224,11 @@ struct ProfileSample
 
 TaskHandle_t g_profileTask = nullptr; // null if it couldn't start
 volatile uint8_t g_profileAvg = 0;    // 0 = newest reading only
+// Since boot: 10 ms periods the profiler didn't get to (stored as missing
+// readings), and reads of a powered port that failed on the I2C bus. Shown by
+// the serial `info` command.
+volatile uint32_t g_profileMissed = 0;
+volatile uint32_t g_profileFailed = 0;
 
 // The capture count of the 10 ms period we're in: 10 ms periods since boot.
 uint32_t captureCountNow()
@@ -217,7 +237,7 @@ uint32_t captureCountNow()
 }
 
 // Port i's raw INA3221 registers to volts and mA. Same chip and channel
-// mapping as readPort(). Used by profilerGetPort().
+// mapping as readPort(). Used by profilerGetPort() and the JSON history.
 void rawToReading(uint8_t i, int16_t bus, int16_t shunt, float &volts, float &ma)
 {
     INA3221 &chip = (i < 3) ? ina_a : ina_b;
@@ -231,7 +251,7 @@ void rawToReading(uint8_t i, int16_t bus, int16_t shunt, float &volts, float &ma
 // writes every port's slot for that period into the history: the raw reading,
 // or invalid when the port is off, has no monitor or the read failed. Power
 // and device changes since the last period are added as events at this one.
-// It sleeps to the middle of the next period, so a cycle that runs late leaves
+// It sleeps to 1 ms into the next period, so a cycle that runs late leaves
 // the period it missed as invalid instead of shifting readings in time.
 // It never exits.
 void profilerTask(void *)
@@ -244,9 +264,13 @@ void profilerTask(void *)
     }
 
     const int64_t periodUs = 1000LL * PortHistory::SAMPLE_MS;
+    uint32_t lastCount = captureCountNow() - 1;
     for (;;)
     {
         uint32_t count = captureCountNow();
+        if ((int32_t)(count - lastCount) > 1)
+            g_profileMissed += count - lastCount - 1;
+        lastCount = count;
         PortHistory::Reading readings[NUM_PORTS];
         for (uint8_t i = 0; i < NUM_PORTS; i++)
         {
@@ -272,18 +296,53 @@ void profilerTask(void *)
             I2CLock lock;
             int16_t bus = chip.bus_voltage_raw(ch);
             if (chip.last_error() != INA3221_OK)
+            {
+                g_profileFailed++;
                 continue;
+            }
             int16_t shunt = chip.shunt_voltage_raw(ch);
             if (chip.last_error() != INA3221_OK)
+            {
+                g_profileFailed++;
                 continue;
+            }
             readings[i] = {true, bus, shunt};
         }
         g_history.write(count, readings);
 
+        // Wake 1 ms into the next period, so a wake-up can run up to 9 ms late
+        // and still read in its own period.
         int64_t us = esp_timer_get_time();
-        int64_t wakeUs = (us / periodUs + 1) * periodUs + periodUs / 2;
+        int64_t wakeUs = (us / periodUs + 1) * periodUs + 1000;
         TickType_t ticks = pdMS_TO_TICKS((uint32_t)((wakeUs - us + 999) / 1000));
         vTaskDelay(ticks ? ticks : 1);
+    }
+}
+
+// Switch on every port its power mode says should be on now: a "boot" port,
+// and a "connect" port with a device plugged in. Only ever switches ports on;
+// a port that's already on, or in "manual", is left alone.
+// Run at startup for every port, and whenever the ports settings change
+// (PortsSettings::onConfigChanged()) for the ports whose mode changed, so a
+// mode set while the hub is running takes effect straight away. Ports whose
+// mode didn't change are left as they are, so renaming a port doesn't switch
+// back on a "boot" port that was turned off by hand.
+void applyPowerModes()
+{
+    static String applied[NUM_PORTS]; // the mode each port was last applied with
+    for (uint8_t i = 0; i < NUM_PORTS; i++)
+    {
+        const String &mode = g_ports.config().power_mode[i];
+        if (mode == applied[i])
+            continue;
+        applied[i] = mode;
+        if (ports[i].isEnabled())
+            continue;
+        if (mode == "boot" || (mode == "connect" && ports[i].isOccupied()))
+        {
+            ports[i].enable();
+            Serial.printf("[port] %u on — power mode %s\r\n", i + 1, mode.c_str());
+        }
     }
 }
 
@@ -299,15 +358,18 @@ void profilerStart()
         Serial.println("[prof] no PSRAM history — profiler not started");
         return;
     }
-    // Priority 2, above loop(), so samples stay on time.
-    xTaskCreatePinnedToCore(profilerTask, "profiler", 4096, nullptr, 2, &g_profileTask, 1);
+    // Priority PROFILE_PRIORITY: above the web server's task (AsyncTCP, priority
+    // 10, either core) and loop(), so a busy web request can't hold it past its
+    // 10 ms period. Each cycle takes well under a millisecond, so it never
+    // starves them. Below the WiFi and system timer tasks.
+    xTaskCreatePinnedToCore(profilerTask, "profiler", 4096, nullptr, PROFILE_PRIORITY, &g_profileTask, 1);
 }
 
 // How many readings profilerGetPort() averages: 0 (newest reading only), 2, 4
 // or 8. Returns false, changing nothing, for any other value.
 bool profilerSetAveraging(int samples)
 {
-    if (samples != 0 && samples != 2 && samples != 4 && samples != 8)
+    if (samples != 0 && samples != 2 && samples != 4 && samples != 8 && samples != 16)
         return false;
     g_profileAvg = samples;
     return true;
@@ -315,7 +377,7 @@ bool profilerSetAveraging(int samples)
 
 // Port i's (0-5) reading; {0, 0, 0} if the port is off. While the profiler is
 // running: from the history, the newest valid reading, or the average of the
-// newest 2, 4 or 8 as set by profilerSetAveraging(), taken from the newest
+// newest 2, 4, 8 or 16 as set by profilerSetAveraging(), taken from the newest
 // PROFILE_LOOKBACK slots and skipping invalid ones — so fewer just after the
 // port powers on; {0, 0, 0} if none of those slots is valid. It only reads the
 // history, so any number of callers get the same answer. If the profiler
@@ -1231,6 +1293,8 @@ void printInfo()
                   (unsigned long)(up % 86400 / 3600), (unsigned long)(up % 3600 / 60), (unsigned long)(up % 60));
     Serial.printf("heap free  : %u bytes (largest block %u)\r\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+    Serial.printf("profiler   : %lu missed periods, %lu failed reads since boot\r\n",
+                  (unsigned long)g_profileMissed, (unsigned long)g_profileFailed);
 
     Serial.println("-- network ------------------------------------------------");
     const HubWiFiConfig &w = g_wifi.config();
@@ -1499,23 +1563,25 @@ void setup()
     Wire.setClock(400000);
     g_ahtOk = aht.isConnected();
     Serial.println(g_ahtOk ? "[aht] AHT20 present at 0x38" : "[aht] AHT20 NOT found at 0x38 — temperature/humidity off");
+    // The sensor's status check and reset (with ~70 ms of delays) happen once
+    // here, before the profiler starts, not on every measurement (ahtTrigger()).
+    if (g_ahtOk)
+        aht.resetSensor();
 
     config.begin();         // mount LittleFS and load each group from /settings/
     g_schedules.validate(); // flag bad entries before anything can fire
-    g_history.begin();      // PSRAM 100 Hz port history, written by the profiler
+    g_history.begin(rawToReading); // PSRAM 100 Hz port history, written by the profiler
     g_envHistory.begin();   // PSRAM sidebar environment history
     profilerSetAveraging(g_profiler.config().averaging);
 
     strip.setBrightness(g_leds.config().brightness);
     startBootSweep(g_wifi.config().ssid.length() == 0);
 
-    // Every port starts off; only those flagged power-on-boot come up.
+    // Every port starts off; then the power modes switch on the "boot" ports,
+    // and "connect" ports that already have a device plugged in.
     for (uint8_t i = 0; i < NUM_PORTS; i++)
-    {
         ports[i].begin();
-        if (g_ports.config().power_mode[i] == "boot")
-            ports[i].enable();
-    }
+    applyPowerModes();
     profilerStart();        // INA sampling into the PSRAM history, always running
 
     pinMode(EXP_INT_PIN, INPUT_PULLUP);
@@ -1603,7 +1669,7 @@ void loop()
     {
         lastTemp = millis();
         I2CLock lock;
-        ahtMeasuring = (aht.requestData() == 0);
+        ahtMeasuring = ahtTrigger();
     }
     else if (ahtMeasuring && millis() - lastTemp >= 100)
     {
