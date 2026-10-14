@@ -5,397 +5,296 @@
 // redistribute it and/or modify it under the terms of the GNU General Public
 // License, version 3 or (at your option) any later version. See LICENSE.
 //
-// PortHistory.cpp — PSRAM-backed rolling measurements for the graph UI.
+// PortHistory.cpp — 100 Hz port history in PSRAM, 60 minutes per port.
 //
-// Samples are kept in RAM only. The UI can request a full window, pan back
-// through the retained PSRAM history, or request points newer than a previous
-// sample timestamp while watching the live head.
+// Samples are kept in RAM only. One writer (the profiler task) and any number
+// of readers. The writer announces the highest count it is about to write
+// (writeTo) before touching the slots, and publishes the newest count after.
+// A reader only uses a slot that was published and isn't being overwritten,
+// checked again after copying it, so it never returns a half-written or
+// overwritten reading.
 #include "history/PortHistory.h"
 #include <esp_heap_caps.h>
-#include <math.h>
 
 PortHistory g_history;
 
 namespace
 {
-constexpr uint16_t INVALID_MV = 0xffff;
-constexpr uint8_t TIER_COUNT = 3;
-constexpr uint16_t TIER_HZ[TIER_COUNT] = {
-    PortHistory::RAW_HZ, PortHistory::MID_HZ, PortHistory::LONG_HZ};
-constexpr uint32_t TIER_SECONDS[TIER_COUNT] = {
-    PortHistory::RAW_SECONDS, PortHistory::MID_SECONDS, PortHistory::LONG_SECONDS};
-constexpr uint32_t TIER_SAMPLES[TIER_COUNT] = {
-    PortHistory::RAW_SAMPLES, PortHistory::MID_SAMPLES, PortHistory::LONG_SAMPLES};
-constexpr uint16_t MAX_HISTORY_POINTS = 3200;
-
-// Return the history tier that best matches the requested display rate.
-uint8_t tierForHz(uint16_t hz)
+void put16(uint8_t *p, uint16_t v)
 {
-    if (hz >= 100)
-        return 0;
-    if (hz >= 10)
-        return 1;
-    return 2;
+    p[0] = v;
+    p[1] = v >> 8;
 }
 
-// Clamp display rates to the retained history tiers.
-uint16_t normalizedHz(uint16_t hz)
+void put32(uint8_t *p, uint32_t v)
 {
-    if (hz != 1 && hz != 10 && hz != 100)
-        hz = 10;
-    return hz;
+    p[0] = v;
+    p[1] = v >> 8;
+    p[2] = v >> 16;
+    p[3] = v >> 24;
 }
 
-// Clamp a requested history window to the chosen tier's retained span.
-uint32_t normalizedSeconds(uint32_t seconds, uint8_t tier)
+// 24 bits: bit 23 valid, bits 22-13 bus (10 bits, 8 mV steps, 0-8.184 V),
+// bits 12-0 shunt (13 bits signed, 40 uV steps). The registers hold their
+// value in bits 15-3.
+void pack(uint8_t *p, const PortHistory::Reading &r)
 {
-    if (seconds < 10)
-        seconds = 10;
-    if (seconds > TIER_SECONDS[tier])
-        seconds = TIER_SECONDS[tier];
-    return seconds;
+    if (!r.valid)
+    {
+        p[0] = p[1] = p[2] = 0;
+        return;
+    }
+    int32_t bus = r.bus >> 3;
+    if (bus < 0)
+        bus = 0;
+    if (bus > 1023)
+        bus = 1023;
+    uint32_t v = (1UL << 23) | ((uint32_t)bus << 13) | ((uint32_t)(r.shunt >> 3) & 0x1fff);
+    p[0] = v >> 16;
+    p[1] = v >> 8;
+    p[2] = v;
 }
 
-// True when `a` is the same as or later than `b`, within the retained window.
-bool timeAtOrAfter(uint32_t a, uint32_t b)
+PortHistory::Reading unpack(const uint8_t *p)
 {
-    return (int32_t)(a - b) >= 0;
+    uint32_t v = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+    if (!(v & (1UL << 23)))
+        return {false, 0, 0};
+    int32_t shunt = v & 0x1fff;
+    if (shunt & 0x1000)
+        shunt -= 0x2000;
+    return {true, (int16_t)(((v >> 13) & 0x3ff) << 3), (int16_t)(shunt * 8)};
+}
 }
 
-// Return the later of two millis() timestamps within the retained window.
-uint32_t laterMs(uint32_t a, uint32_t b)
-{
-    return timeAtOrAfter(a, b) ? a : b;
-}
-
-// Pack a floating-point value into an unsigned integer with saturation.
-uint32_t packScaled(float v, float scale, uint32_t maxValue)
-{
-    if (!isfinite(v) || v <= 0.0f)
-        return 0;
-    double scaled = (double)v * (double)scale;
-    if (scaled >= (double)maxValue)
-        return maxValue;
-    return (uint32_t)(scaled + 0.5);
-}
-
-// Convert one profiler reading into the compact PSRAM sample format.
-PortHistory::Sample makeSample(uint32_t ms, bool ok, float volts, float ma)
-{
-    if (!ok)
-        return {ms, INVALID_MV, 0};
-    return {
-        ms,
-        (uint16_t)packScaled(volts, 1000.0f, INVALID_MV - 1),
-        (uint16_t)packScaled(ma, 10.0f, 0xffff)};
-}
-
-// True when a compact sample represents a valid monitor reading.
-bool sampleOk(const PortHistory::Sample &s)
-{
-    return s.mv != INVALID_MV;
-}
-
-// Expand a compact sample voltage to volts.
-float sampleVolts(const PortHistory::Sample &s)
-{
-    return (float)s.mv / 1000.0f;
-}
-
-// Expand a compact sample current to milliamps.
-float sampleMa(const PortHistory::Sample &s)
-{
-    return (float)s.ma10 / 10.0f;
-}
-
-// Expand a compact sample power to milliwatts.
-float sampleMw(const PortHistory::Sample &s)
-{
-    return sampleVolts(s) * sampleMa(s);
-}
-
-}
-
-// Allocate zeroed ring buffers per tier and per port in PSRAM.
+// Allocate the zeroed (all invalid) history and event lists in PSRAM.
 bool PortHistory::begin()
 {
     if (available())
         return true;
 
-    if (!_mutex)
+    size_t bytes = (size_t)HUB_NUM_PORTS * SAMPLES * SAMPLE_BYTES;
+    _samples = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _events = (EventRec *)heap_caps_calloc((size_t)HUB_NUM_PORTS * MAX_EVENTS, sizeof(EventRec),
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!_samples || !_events)
     {
-        _mutex = xSemaphoreCreateMutex();
-        if (!_mutex)
-        {
-            Serial.println("[hist] PSRAM history mutex allocation failed");
-            return false;
-        }
+        Serial.printf("[hist] PSRAM history allocation failed (%u bytes)\r\n", (unsigned)bytes);
+        heap_caps_free(_samples);
+        heap_caps_free(_events);
+        _samples = nullptr;
+        _events = nullptr;
+        return false;
     }
-
-    size_t total = 0;
-    for (uint8_t tier = 0; tier < TIER_COUNT; tier++)
-    {
-        size_t samples = (size_t)HUB_NUM_PORTS * TIER_SAMPLES[tier];
-        size_t bytes = samples * sizeof(Sample);
-        _samples[tier] = (Sample *)heap_caps_calloc(samples, sizeof(Sample),
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!_samples[tier])
-        {
-            Serial.printf("[hist] PSRAM allocation failed for %u Hz tier (%u bytes)\r\n",
-                          (unsigned)TIER_HZ[tier], (unsigned)bytes);
-            for (uint8_t i = 0; i < tier; i++)
-            {
-                heap_caps_free(_samples[i]);
-                _samples[i] = nullptr;
-            }
-            return false;
-        }
-        total += bytes;
-    }
-
-    Serial.printf("[hist] PSRAM history ready: %u ports, %u bytes/port, %u bytes total\r\n",
-                  (unsigned)HUB_NUM_PORTS,
-                  (unsigned)(SAMPLES_PER_PORT * sizeof(Sample)),
-                  (unsigned)total);
+    Serial.printf("[hist] PSRAM history ready: %u ports, %u s at %u Hz, %u bytes\r\n",
+                  (unsigned)HUB_NUM_PORTS, (unsigned)SECONDS, (unsigned)SAMPLE_HZ, (unsigned)bytes);
     return true;
 }
 
-// Return true once all tiers have backing PSRAM.
-bool PortHistory::available() const
+PortHistory::State PortHistory::state() const
 {
-    for (uint8_t tier = 0; tier < TIER_COUNT; tier++)
-        if (!_samples[tier])
-            return false;
-    return true;
+    portENTER_CRITICAL(&_mux);
+    State s = _state;
+    portEXIT_CRITICAL(&_mux);
+    return s;
 }
 
-// Append one reading to the raw ring and its lower-rate history tiers.
-void PortHistory::record(uint8_t port, uint32_t ms, bool ok, float volts, float ma)
+// Write n invalid slots for every port, starting at slot index `from`.
+void PortHistory::fillInvalid(uint32_t from, uint32_t n)
+{
+    uint32_t first = min(n, SAMPLES - from);
+    for (uint8_t port = 0; port < HUB_NUM_PORTS; port++)
+    {
+        uint8_t *base = _samples + (size_t)port * SAMPLES * SAMPLE_BYTES;
+        memset(base + (size_t)from * SAMPLE_BYTES, 0, (size_t)first * SAMPLE_BYTES);
+        if (n > first)
+            memset(base, 0, (size_t)(n - first) * SAMPLE_BYTES);
+    }
+}
+
+void PortHistory::write(uint32_t count, const Reading readings[HUB_NUM_PORTS])
+{
+    if (!available())
+        return;
+    State s = state();
+    uint32_t blank = 0;
+    uint32_t at = SAMPLES - 1; // the first slot ever written goes at index 0
+    if (s.hasData)
+    {
+        uint32_t gap = count - s.newest;
+        if ((int32_t)gap <= 0)
+            return;
+        blank = min(gap - 1, SAMPLES);
+        at = s.newestAt;
+    }
+
+    portENTER_CRITICAL(&_mux);
+    _state.writeTo = count;
+    portEXIT_CRITICAL(&_mux);
+
+    if (blank)
+        fillInvalid((at + 1) % SAMPLES, blank);
+    at = (at + blank + 1) % SAMPLES;
+    for (uint8_t port = 0; port < HUB_NUM_PORTS; port++)
+        pack(_samples + ((size_t)port * SAMPLES + at) * SAMPLE_BYTES, readings[port]);
+
+    portENTER_CRITICAL(&_mux);
+    _state.filled = s.hasData ? min(s.filled + blank + 1, SAMPLES) : 1;
+    _state.newest = count;
+    _state.newestAt = at;
+    _state.hasData = true;
+    portEXIT_CRITICAL(&_mux);
+}
+
+void PortHistory::addEvent(uint8_t port, uint32_t count, Event code)
 {
     if (!available() || port >= HUB_NUM_PORTS)
         return;
+    portENTER_CRITICAL(&_mux);
+    _events[port * MAX_EVENTS + _eventHead[port]] = {count, (uint8_t)code};
+    _eventHead[port] = (_eventHead[port] + 1) % MAX_EVENTS;
+    if (_eventCount[port] < MAX_EVENTS)
+        _eventCount[port]++;
+    portEXIT_CRITICAL(&_mux);
+}
 
-    Sample sample = makeSample(ms, ok, volts, ma);
-    append(TIER_RAW, port, sample);
+bool PortHistory::readAt(uint8_t port, uint32_t count, Reading &out) const
+{
+    State s = state();
+    if (!s.hasData)
+        return false;
+    uint32_t age = s.newest - count;
+    if ((int32_t)age < 0 || age >= s.filled || s.writeTo - count >= SAMPLES)
+        return false;
+    uint32_t at = (s.newestAt + SAMPLES - age) % SAMPLES;
+    out = unpack(_samples + ((size_t)port * SAMPLES + at) * SAMPLE_BYTES);
+    // Overwritten while it was being copied?
+    portENTER_CRITICAL(&_mux);
+    uint32_t writeTo = _state.writeTo;
+    portEXIT_CRITICAL(&_mux);
+    return writeTo - count < SAMPLES;
+}
 
-    for (uint8_t tier = TIER_MID; tier < TIER_COUNT; tier++)
+uint8_t PortHistory::latest(uint8_t port, uint8_t max, Reading *out) const
+{
+    if (!available() || port >= HUB_NUM_PORTS)
+        return 0;
+    State s = state();
+    uint8_t n = 0;
+    while (n < max && readAt(port, s.newest - n, out[n]))
+        n++;
+    return n;
+}
+
+// Plan one page: pick its readings, then build the header and copy in the
+// port's events that fall within them.
+bool PortHistory::page(uint8_t port, PageFrom from, uint32_t count, uint32_t most, Page &out) const
+{
+    if (!available() || port >= HUB_NUM_PORTS)
+        return false;
+    if (most < 1 || most > PAGE_SAMPLES)
+        most = PAGE_SAMPLES;
+    State s = state();
+    uint32_t first = 0, n = 0;
+    if (s.hasData)
     {
-        uint32_t interval = 1000UL / TIER_HZ[tier];
-        if (!_lastTierMs[tier][port] || (uint32_t)(ms - _lastTierMs[tier][port]) >= interval)
+        // The oldest reading held that isn't about to be overwritten.
+        uint32_t oldest = s.newest - s.filled + 1;
+        uint32_t safe = s.writeTo - SAMPLES + 1;
+        if ((int32_t)(safe - oldest) > 0)
+            oldest = safe;
+
+        if (from == PAGE_AFTER && (int32_t)(count - s.newest) < 0)
         {
-            _lastTierMs[tier][port] = ms;
-            append(tier, port, sample);
+            // Oldest first, from just after `count`.
+            first = count + 1;
+            if ((int32_t)(oldest - first) > 0)
+                first = oldest;
+            n = min<uint32_t>(s.newest - first + 1, most);
+        }
+        else if (!(from == PAGE_AFTER && count == s.newest))
+        {
+            // The `most` readings ending at the newest, or just before `count`.
+            uint32_t last = s.newest;
+            if (from == PAGE_BEFORE && (int32_t)(count - 1 - s.newest) < 0)
+                last = count - 1;
+            if ((int32_t)(last - oldest) >= 0)
+            {
+                n = min<uint32_t>(last - oldest + 1, most);
+                first = last - n + 1;
+            }
         }
     }
-}
 
-// Append one sample to a tier ring, overwriting the oldest sample when full.
-void PortHistory::append(uint8_t tier, uint8_t port, const Sample &sample)
-{
-    if (tier >= TIER_COUNT || port >= HUB_NUM_PORTS)
-        return;
-    if (!_mutex || xSemaphoreTake(_mutex, portMAX_DELAY) != pdTRUE)
-        return;
-    uint32_t capacity = TIER_SAMPLES[tier];
-    uint32_t pos = port * capacity + _head[tier][port];
-    _samples[tier][pos] = sample;
-    _head[tier][port] = (_head[tier][port] + 1) % capacity;
-    if (_count[tier][port] < capacity)
-        _count[tier][port]++;
-    xSemaphoreGive(_mutex);
-}
-
-// Copy a sample by age-ordered index, oldest first.
-bool PortHistory::sampleAt(uint8_t tier, uint8_t port, uint32_t index, Sample &sample) const
-{
-    if (tier >= TIER_COUNT || !_samples[tier] || port >= HUB_NUM_PORTS || index >= _count[tier][port])
-        return false;
-    if (!_mutex || xSemaphoreTake(_mutex, portMAX_DELAY) != pdTRUE)
-        return false;
-    if (index >= _count[tier][port])
+    uint16_t events = 0;
+    if (n)
     {
-        xSemaphoreGive(_mutex);
-        return false;
+        uint32_t last = first + n - 1;
+        uint8_t *p = out.head + PAGE_HEADER_BYTES;
+        portENTER_CRITICAL(&_mux);
+        uint16_t total = _eventCount[port];
+        uint16_t start = (_eventHead[port] + MAX_EVENTS - total) % MAX_EVENTS;
+        for (uint16_t k = 0; k < total; k++)
+        {
+            const EventRec &e = _events[port * MAX_EVENTS + (start + k) % MAX_EVENTS];
+            if ((int32_t)(e.count - first) < 0 || (int32_t)(last - e.count) < 0)
+                continue;
+            put32(p, e.count);
+            p[4] = e.code;
+            p += EVENT_BYTES;
+            events++;
+        }
+        portEXIT_CRITICAL(&_mux);
     }
-    uint32_t capacity = TIER_SAMPLES[tier];
-    uint32_t start = (_head[tier][port] + capacity - _count[tier][port]) % capacity;
-    sample = _samples[tier][port * capacity + ((start + index) % capacity)];
-    xSemaphoreGive(_mutex);
+
+    out.first = first;
+    out.readings = n;
+    out.headBytes = PAGE_HEADER_BYTES + (size_t)events * EVENT_BYTES;
+    put32(out.head, first);
+    put16(out.head + 4, events);
+    put32(out.head + 6, n);
     return true;
 }
 
-// Return how many seconds of history are currently populated for one tier.
-uint32_t PortHistory::availableSeconds(uint8_t tier, uint8_t port) const
+void PortHistory::readRaw(uint8_t port, uint32_t first, uint32_t n, uint8_t *out) const
 {
-    if (tier >= TIER_COUNT || port >= HUB_NUM_PORTS || _count[tier][port] < 2)
-        return 0;
-    Sample oldest;
-    Sample newest;
-    if (!sampleAt(tier, port, 0, oldest) ||
-        !sampleAt(tier, port, _count[tier][port] - 1, newest))
-        return 0;
-    uint32_t seconds = (uint32_t)(newest.ms - oldest.ms) / 1000UL;
-    return min<uint32_t>(seconds, TIER_SECONDS[tier]);
-}
-
-// Append compact point arrays for one port, decimating large visible windows so
-// JSON responses stay small enough for the ESP32.
-void PortHistory::appendPoints(Print &out, uint8_t tier, uint8_t port, uint32_t seconds,
-                               uint32_t now, uint32_t sinceMs, bool absoluteTime,
-                               uint32_t offsetSeconds) const
-{
-    if (!available() || tier >= TIER_COUNT || port >= HUB_NUM_PORTS)
+    memset(out, 0, (size_t)n * SAMPLE_BYTES);
+    if (!available() || port >= HUB_NUM_PORTS || !n)
+        return;
+    State s = state();
+    if (!s.hasData)
         return;
 
-    uint32_t offsetMs = offsetSeconds * 1000UL;
-    uint32_t endMs = (offsetMs < now) ? (now - offsetMs) : 0;
-    uint32_t windowMs = seconds * 1000UL;
-    uint32_t startMs = (windowMs < endMs) ? (endMs - windowMs) : 0;
-    uint32_t count = _count[tier][port];
-    uint32_t searchSeconds = min<uint32_t>(TIER_SECONDS[tier], seconds + offsetSeconds);
-    uint32_t searchSamples = min<uint32_t>(count, searchSeconds * TIER_HZ[tier] + 2);
-    uint32_t first = count - searchSamples;
-    uint32_t targetMs = sinceMs ? laterMs(startMs, sinceMs + 1) : startMs;
+    // The part of first..first + n - 1 that's held and not being overwritten.
     uint32_t lo = first;
-    uint32_t hi = count;
-    while (lo < hi)
-    {
-        uint32_t mid = lo + (hi - lo) / 2;
-        Sample s;
-        if (sampleAt(tier, port, mid, s) && !timeAtOrAfter(s.ms, targetMs))
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    first = lo;
+    uint32_t oldest = s.newest - s.filled + 1;
+    if ((int32_t)(oldest - lo) > 0)
+        lo = oldest;
+    uint32_t safe = s.writeTo - SAMPLES + 1;
+    if ((int32_t)(safe - lo) > 0)
+        lo = safe;
+    uint32_t hi = first + n - 1;
+    if ((int32_t)(hi - s.newest) > 0)
+        hi = s.newest;
+    if ((int32_t)(hi - lo) < 0)
+        return;
 
-    uint32_t visibleSamples = min<uint32_t>(count, seconds * TIER_HZ[tier] + 2);
-    uint32_t stride = max<uint32_t>(1, (visibleSamples + MAX_HISTORY_POINTS - 1) / MAX_HISTORY_POINTS);
-    bool comma = false;
-    uint16_t emitted = 0;
-    for (uint32_t i = first; i < count; i += stride)
-    {
-        Sample s;
-        if (!sampleAt(tier, port, i, s) || !sampleOk(s))
-            continue;
-        if ((int32_t)(s.ms - startMs) < 0 || (int32_t)(endMs - s.ms) < 0)
-            continue;
-        if (sinceMs && (int32_t)(s.ms - sinceMs) <= 0)
-            continue;
-        if (comma)
-            out.print(',');
-        comma = true;
-        out.print('[');
-        if (absoluteTime)
-            out.print(s.ms);
-        else
-            out.print((int32_t)(s.ms - endMs));
-        out.print(',');
-        out.print(sampleVolts(s), 3);
-        out.print(',');
-        out.print(sampleMa(s), 1);
-        out.print(',');
-        out.print(sampleMw(s), 1);
-        out.print(']');
-        if ((++emitted & 0x7f) == 0)
-            delay(0);
-    }
-}
+    // Copy it, in two parts if it wraps round the end of the ring.
+    uint32_t m = hi - lo + 1;
+    uint32_t at = (s.newestAt + SAMPLES - (s.newest - lo)) % SAMPLES;
+    const uint8_t *base = _samples + (size_t)port * SAMPLES * SAMPLE_BYTES;
+    uint8_t *dst = out + (size_t)(lo - first) * SAMPLE_BYTES;
+    uint32_t part = min(m, SAMPLES - at);
+    memcpy(dst, base + (size_t)at * SAMPLE_BYTES, (size_t)part * SAMPLE_BYTES);
+    if (m > part)
+        memcpy(dst + (size_t)part * SAMPLE_BYTES, base, (size_t)(m - part) * SAMPLE_BYTES);
 
-// Write the history JSON body for one port.
-void PortHistory::writeJson(Print &out, uint8_t port, uint16_t hz,
-                            uint32_t seconds, uint32_t now,
-                            uint32_t sinceMs, bool absoluteTime,
-                            uint32_t offsetSeconds) const
-{
-    hz = normalizedHz(hz);
-    uint8_t tier = tierForHz(hz);
-    seconds = normalizedSeconds(seconds, tier);
-    uint32_t availableSpan = availableSeconds(tier, port);
-    uint32_t maxOffset = (availableSpan > seconds) ? (availableSpan - seconds) : 0;
-    if (offsetSeconds > maxOffset)
-        offsetSeconds = maxOffset;
-
-    out.print(F("{\"ok\":"));
-    out.print(available() ? "true" : "false");
-    out.print(F(",\"port\":"));
-    out.print((unsigned)(port + 1));
-    out.print(F(",\"hz\":"));
-    out.print(hz);
-    out.print(F(",\"capture_hz\":"));
-    out.print(SAMPLE_HZ);
-    out.print(F(",\"stored_hz\":"));
-    out.print(TIER_HZ[tier]);
-    out.print(F(",\"window_s\":"));
-    out.print(seconds);
-    out.print(F(",\"max_window_s\":"));
-    out.print(TIER_SECONDS[tier]);
-    out.print(F(",\"available_s\":"));
-    out.print(availableSpan);
-    out.print(F(",\"tiers\":["));
-    for (uint8_t i = 0; i < TIER_COUNT; i++)
-    {
-        if (i)
-            out.print(',');
-        out.print(F("{\"hz\":"));
-        out.print(TIER_HZ[i]);
-        out.print(F(",\"max_window_s\":"));
-        out.print(TIER_SECONDS[i]);
-        out.print(F(",\"available_s\":"));
-        out.print(availableSeconds(i, port));
-        out.print('}');
-    }
-    out.print(F("],\"offset_s\":"));
-    out.print(offsetSeconds);
-    out.print(F(",\"now_ms\":"));
-    out.print(now);
-    out.print(F(",\"time\":\""));
-    out.print(absoluteTime ? "absolute" : "relative");
-    out.print(F("\",\"points\":["));
-    appendPoints(out, tier, port, seconds, now, sinceMs, absoluteTime, offsetSeconds);
-    out.print(F("]}"));
-}
-
-// Write the history JSON body for every port.
-void PortHistory::writeJsonAll(Print &out, uint16_t hz, uint32_t seconds,
-                               uint32_t now, uint32_t sinceMs,
-                               bool absoluteTime, uint32_t offsetSeconds) const
-{
-    hz = normalizedHz(hz);
-    uint8_t tier = tierForHz(hz);
-    seconds = normalizedSeconds(seconds, tier);
-
-    out.print(F("{\"ok\":"));
-    out.print(available() ? "true" : "false");
-    out.print(F(",\"port\":\"all\""));
-    out.print(F(",\"hz\":"));
-    out.print(hz);
-    out.print(F(",\"capture_hz\":"));
-    out.print(SAMPLE_HZ);
-    out.print(F(",\"stored_hz\":"));
-    out.print(TIER_HZ[tier]);
-    out.print(F(",\"window_s\":"));
-    out.print(seconds);
-    out.print(F(",\"max_window_s\":"));
-    out.print(TIER_SECONDS[tier]);
-    out.print(F(",\"offset_s\":"));
-    out.print(offsetSeconds);
-    out.print(F(",\"now_ms\":"));
-    out.print(now);
-    out.print(F(",\"time\":\""));
-    out.print(absoluteTime ? "absolute" : "relative");
-    out.print(F("\",\"ports\":["));
-    for (uint8_t port = 0; port < HUB_NUM_PORTS; port++)
-    {
-        if (port)
-            out.print(',');
-        out.print(F("{\"port\":"));
-        out.print((unsigned)(port + 1));
-        out.print(F(",\"available_s\":"));
-        out.print(availableSeconds(tier, port));
-        out.print(F(",\"points\":["));
-        appendPoints(out, tier, port, seconds, now, sinceMs, absoluteTime, offsetSeconds);
-        out.print(F("]}"));
-    }
-    out.print(F("]}"));
+    // Readings overwritten while they were being copied go out invalid. They're
+    // always the oldest ones.
+    portENTER_CRITICAL(&_mux);
+    uint32_t writeTo = _state.writeTo;
+    portEXIT_CRITICAL(&_mux);
+    uint32_t limit = writeTo - SAMPLES + 1;
+    if ((int32_t)(limit - lo) > 0)
+        memset(dst, 0, (size_t)min(limit - lo, m) * SAMPLE_BYTES);
 }

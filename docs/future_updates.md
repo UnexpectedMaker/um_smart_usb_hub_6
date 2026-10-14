@@ -165,3 +165,19 @@ device has been present (separate from time powered).
 ## Hardware
 
 - **Schematic PDF**, for anyone without KiCad.
+
+---
+
+## Port profiler
+
+### Threshold and spike events
+
+The profiler sees every reading, so it can add more events to the port event
+list (see `profiler.md`), with settings in the web UI to set the triggers:
+
+- **Current above a threshold:** crossing up, and back down.
+- **Voltage below a threshold:** a dip or sag, and recovering.
+- **Spike:** the change between two consecutive readings is bigger than a set
+  amount, up or down.
+
+Not designed: which ones, whether thresholds are per port or for all ports.

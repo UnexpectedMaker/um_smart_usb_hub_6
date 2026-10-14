@@ -7,10 +7,13 @@
 //
 // HubWebServer.cpp — HTTP routes: the embedded web UI and the JSON API.
 // The JSON bodies themselves are built in main.ino and handed in as callbacks.
+// The port history is streamed straight out of the PSRAM history (g_history).
 #include "HubWebServer.h"
 #include "HubWebUI.h"
+#include "history/PortHistory.h"
 #include "settings/HubSettings.h"
 #include <ESPAsyncWebServer.h>
+#include <memory>
 
 static AsyncWebServer server(80);
 HubWebServer webServer;
@@ -85,6 +88,27 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
     return g;
 }
 
+// A request parameter that must be a whole number, 0..4294967295. False if it
+// isn't.
+static bool paramUint(AsyncWebServerRequest *req, const char *name, uint32_t &out)
+{
+    const String &v = req->getParam(name)->value();
+    if (!v.length() || v.length() > 10)
+        return false;
+    uint64_t n = 0;
+    for (unsigned i = 0; i < v.length(); i++)
+    {
+        char c = v[i];
+        if (c < '0' || c > '9')
+            return false;
+        n = n * 10 + (c - '0');
+    }
+    if (n > UINT32_MAX)
+        return false;
+    out = (uint32_t)n;
+    return true;
+}
+
 // Collect a request body that may arrive in several chunks. Returns true, with
 // the whole body in `out`, once the last chunk is in.
 static bool collectBody(AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total,
@@ -105,7 +129,7 @@ static bool collectBody(AsyncWebServerRequest *req, uint8_t *data, size_t len, s
 }
 
 void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
-                         HistoryFn historyFn, EnvHistoryFn envHistoryFn,
+                         EnvHistoryFn envHistoryFn,
                          SchedGetFn schedGetFn, SchedSetFn schedSetFn)
 {
     if (_started)
@@ -145,36 +169,69 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         req->send(200, "application/json", statusFn());
     });
 
-    // GET /api/history?port=1..6|all&hz=100|10|1&window=<seconds> — PSRAM graph data.
-    // Optional since=<millis>&abs=1 returns only newer points with absolute
-    // sample times, so the web UI can update live without re-sending the window.
-    // Optional offset=<seconds> pans back from the live head.
-    server.on("/api/history", HTTP_GET, [historyFn](AsyncWebServerRequest *req) {
-        int port = 1;
+    // GET /api/history?port=1..6 — one page of a port's PSRAM history, in
+    // binary (layout: PortHistory::Page). Without before/after: the newest
+    // 10 minutes. before=<count>: the 10 minutes before that capture count,
+    // for filling in older history. after=<count>: everything newer than that
+    // capture count, for live updates. max=<n> sends at most n readings.
+    // 400 for a bad port or parameter, 503 if there's no PSRAM history.
+    server.on("/api/history", HTTP_GET, [](AsyncWebServerRequest *req) {
+        uint32_t port = 0;
         if (req->hasParam("port"))
         {
-            String portParam = req->getParam("port")->value();
-            portParam.toLowerCase();
-            if (portParam == "all")
+            // NOT ALLOWED: history is only ever served for one port at a time.
+            // port=all (every port's history in one response) is removed and
+            // must not be put back. Rejected with 400 below.
+            if (!paramUint(req, "port", port))
                 port = 0;
-            else
-            {
-                port = portParam.toInt();
-                if (port < 1)
-                    port = 1;
-            }
         }
-        int hz = req->hasParam("hz") ? req->getParam("hz")->value().toInt() : 10;
-        int win = req->hasParam("window") ? req->getParam("window")->value().toInt() : 10;
-        uint32_t since = req->hasParam("since")
-                             ? (uint32_t)strtoul(req->getParam("since")->value().c_str(), nullptr, 10)
-                             : 0;
-        bool abs = req->hasParam("abs") && req->getParam("abs")->value().toInt() != 0;
-        uint32_t offset = req->hasParam("offset")
-                              ? (uint32_t)strtoul(req->getParam("offset")->value().c_str(), nullptr, 10)
-                              : 0;
-        AsyncResponseStream *res = req->beginResponseStream("application/json", 2048);
-        historyFn(*res, port, hz, win, since, abs, offset);
+        if (port < 1 || port > HUB_NUM_PORTS)
+        {
+            req->send(400, "application/json", "{\"error\":\"port must be 1-6\"}");
+            return;
+        }
+        bool before = req->hasParam("before");
+        bool after = req->hasParam("after");
+        uint32_t count = 0;
+        uint32_t most = PortHistory::PAGE_SAMPLES;
+        if ((before && after) ||
+            (before && !paramUint(req, "before", count)) ||
+            (after && !paramUint(req, "after", count)) ||
+            (req->hasParam("max") && (!paramUint(req, "max", most) || most < 1 || most > PortHistory::PAGE_SAMPLES)))
+        {
+            req->send(400, "application/json", "{\"error\":\"bad parameter\"}");
+            return;
+        }
+        PortHistory::PageFrom from = before ? PortHistory::PAGE_BEFORE
+                                   : after  ? PortHistory::PAGE_AFTER
+                                            : PortHistory::PAGE_NEWEST;
+        auto page = std::make_shared<PortHistory::Page>();
+        uint8_t index = port - 1;
+        if (!g_history.page(index, from, count, most, *page))
+        {
+            req->send(503, "application/json", "{\"error\":\"no history\"}");
+            return;
+        }
+        size_t length = page->headBytes + (size_t)page->readings * PortHistory::SAMPLE_BYTES;
+        // Sent a piece at a time: the header and events, then the readings,
+        // copied out of PSRAM as they go, always whole readings at a time.
+        AsyncWebServerResponse *res = req->beginResponse(
+            "application/octet-stream", length,
+            [page, index](uint8_t *buf, size_t maxLen, size_t sent) -> size_t {
+                if (sent < page->headBytes)
+                {
+                    size_t n = min(maxLen, page->headBytes - sent);
+                    memcpy(buf, page->head + sent, n);
+                    return n;
+                }
+                uint32_t at = (sent - page->headBytes) / PortHistory::SAMPLE_BYTES;
+                uint32_t n = min<uint32_t>(maxLen / PortHistory::SAMPLE_BYTES, page->readings - at);
+                if (!n)
+                    return RESPONSE_TRY_AGAIN;
+                g_history.readRaw(index, page->first + at, n, buf);
+                return (size_t)n * PortHistory::SAMPLE_BYTES;
+            });
+        res->addHeader("Cache-Control", "no-store");
         req->send(res);
     });
 
@@ -237,7 +294,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
                     if (!m)
                         continue;
                     m->fromJson(it.value());
-                    m->save();
+                    m->requestSave();
                     HubRegistry::dispatchConfigChanged(it.key().c_str());
                 }
             }

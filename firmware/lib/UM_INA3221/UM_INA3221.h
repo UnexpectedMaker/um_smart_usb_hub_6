@@ -75,6 +75,16 @@ class INA3221
 		float current_A(uint8_t channel);
 		float power_mW(uint8_t channel); // bus_V * current_mA
 
+		// Raw shunt / bus voltage registers (the reading is in bits [15:3]).
+		// 0 on a bad channel or an I2C error — check last_error() after.
+		int16_t shunt_voltage_raw(uint8_t channel);
+		int16_t bus_voltage_raw(uint8_t channel);
+		// Convert raw register values: bus register -> volts, shunt register
+		// -> milliamps through this channel's shunt (NAN on a bad channel or
+		// no shunt set).
+		static float raw_to_bus_V(int16_t raw);
+		float raw_to_current_mA(uint8_t channel, int16_t raw);
+
 		// Raw config access + soft reset.
 		uint16_t read_config();
 		bool write_config(uint16_t cfg);

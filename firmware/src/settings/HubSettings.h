@@ -29,9 +29,9 @@
 //   wifi       g_wifi       credentials and DHCP / static addressing
 //   location   g_location   city, UTC offset and NTP server
 //   leds       g_leds       port LED on/off and brightness
-//   monitor    g_monitor    INA profiler filtering
 //   ports      g_ports      which ports power up at boot
 //   website    g_website    web UI theme
+//   profiler   g_profiler   port profiler options and graph view preferences
 //   schedules  g_schedules  per-port power schedules, plus their validation
 #pragma once
 #include <Arduino.h>
@@ -86,6 +86,9 @@ public:
 
     // Write this group — and only this group — to its file in flash.
     bool save();
+    // Save after a change through POST /api/settings. Saves straight away; a
+    // group can override it to save later.
+    virtual void requestSave() { save(); }
 
     // Its file name (/settings/<name>.json) and its key in the settings API.
     virtual const char *name() const = 0;
@@ -307,30 +310,6 @@ public:
 extern LedsSettings g_leds;
 
 // ===========================================================================
-// monitor — INA profiler options.
-// ===========================================================================
-struct HubMonitorConfig
-{
-    uint8_t averaging = 0; // newest sample only, or average newest 2 | 4 | 8
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubMonitorConfig, averaging);
-
-class MonitorSettings : public HubSettingsT<HubMonitorConfig>
-{
-public:
-    const char *name() const override { return "monitor"; }
-    const char *label() const override { return "Monitor"; }
-    std::vector<HubSettingField> uiSchema() override;
-
-    // Loads as usual, then clamps unsupported averaging values to the profiler
-    // values documented in docs/profiler.md.
-    void fromJson(const nlohmann::json &j) override;
-    // Re-apply profiler filtering immediately after a web settings change.
-    void onConfigChanged() override;
-};
-extern MonitorSettings g_monitor;
-
-// ===========================================================================
 // ports — per-port options: the power mode and the port names. Power modes are
 // set in the Settings drawer; names on the port cards.
 // ===========================================================================
@@ -370,18 +349,8 @@ extern PortsSettings g_ports;
 struct HubWebsiteConfig
 {
     String theme = "dark"; // "dark" | "light"
-    bool mini_graphs = false;
-    String mini_metric = "ma";    // "ma" | "mw" | "volts"
-    String graph_metric = "volts,ma,mw"; // comma-separated subset of "volts", "ma", "mw"
-    uint8_t graph_hz = 10;        // 1 | 10 | 100
-    uint16_t graph_window = 10;   // seconds, clamped to retained history
-    String graph_scale = "linear"; // "linear" | "log" time axis
-    bool graph_voltage_zero = false;
-    bool graph_y_lock = false;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubWebsiteConfig, theme, mini_graphs, mini_metric,
-                                                graph_metric, graph_hz, graph_window, graph_scale,
-                                                graph_voltage_zero, graph_y_lock);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubWebsiteConfig, theme);
 
 class WebsiteSettings : public HubSettingsT<HubWebsiteConfig>
 {
@@ -390,13 +359,70 @@ public:
     const char *label() const override { return "Website"; }
     bool show_on_website() const override { return false; }
 
+    // Loads as usual, then an unknown theme becomes "dark".
     void fromJson(const nlohmann::json &j) override;
     // Store the theme; anything other than "dark" or "light" is ignored.
     void setTheme(const String &theme);
-    // The graph UI reads its hidden preferences from /api/status.
-    String uiPrefsJson() const;
 };
 extern WebsiteSettings g_website;
+
+// ===========================================================================
+// profiler — the port profiler's options, and the web UI's graph view
+// preferences. Averaging is in the Settings drawer; the graph preferences are
+// set by the graph controls and aren't shown there.
+// ===========================================================================
+// How long the profiler settings must go unchanged before they're saved to
+// flash, so a burst of graph clicks becomes one write.
+#define PROFILER_SAVE_DELAY_MS 3000
+
+struct HubProfilerConfig
+{
+    uint8_t averaging = 0;         // newest sample only, or average newest 2 | 4 | 8
+    String mini_metric = "ma";     // "ma" | "mw" | "volts"
+    String graph_metric = "volts,ma,mw"; // comma-separated subset of "volts", "ma", "mw"
+    bool graph_voltage_zero = false;
+
+    // HISTORICAL: no longer used by the web UI. The mini graphs are always on,
+    // the graph always shows all the history held (or the zoom), it's always
+    // linear, and its Y axis is always locked. Still stored, loaded and sent in
+    // /api/status for now; to be removed.
+    bool mini_graphs = false;
+    uint16_t graph_window = 10;    // seconds shown, 10..3600
+    String graph_scale = "linear"; // "linear" | "log" time axis
+    bool graph_y_lock = false;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubProfilerConfig, averaging, mini_graphs,
+                                                mini_metric, graph_metric, graph_window,
+                                                graph_scale, graph_voltage_zero, graph_y_lock);
+
+class ProfilerSettings : public HubSettingsT<HubProfilerConfig>
+{
+public:
+    const char *name() const override { return "profiler"; }
+    const char *label() const override { return "Profiler"; }
+    // Averaging. The graph preferences aren't listed.
+    std::vector<HubSettingField> uiSchema() override;
+
+    // Loads as usual, then puts any unsupported value back to its default:
+    // averaging not 0, 2, 4 or 8; unknown metrics, window or scale.
+    void fromJson(const nlohmann::json &j) override;
+    // Applies the averaging to the running profiler.
+    void onConfigChanged() override;
+    // The graph preferences and the averaging as a JSON object, for
+    // /api/status.
+    String uiPrefsJson() const;
+    // Doesn't save: marks the group dirty and restarts the
+    // PROFILER_SAVE_DELAY_MS countdown, every call, dirty or not.
+    void requestSave() override;
+    // Saves to flash and clears the dirty flag once the group is dirty and
+    // PROFILER_SAVE_DELAY_MS has passed since the last change.
+    void loop() override;
+
+private:
+    volatile bool _dirty = false;   // changed since the last save; never stored
+    volatile uint32_t _dirtyAt = 0; // millis() of the last change
+};
+extern ProfilerSettings g_profiler;
 
 // ===========================================================================
 // schedules — per-port power schedules.

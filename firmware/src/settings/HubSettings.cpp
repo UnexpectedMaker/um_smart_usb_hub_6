@@ -203,9 +203,9 @@ DeviceSettings g_device;
 WiFiSettings g_wifi;
 LocationSettings g_location;
 LedsSettings g_leds;
-MonitorSettings g_monitor;
 PortsSettings g_ports;
 WebsiteSettings g_website;
+ProfilerSettings g_profiler;
 SchedulesSettings g_schedules;
 
 // Shorthand for building form fields.
@@ -372,32 +372,6 @@ std::vector<HubSettingField> LedsSettings::uiSchema()
 }
 
 // ===========================================================================
-// monitor
-// ===========================================================================
-
-std::vector<HubSettingField> MonitorSettings::uiSchema()
-{
-    return {
-        {.type = F::T::Choice, .key = "averaging", .label = "Profiler averaging",
-         .help = "Newest sample, or mean of the newest 2, 4 or 8 samples",
-         .options = "0,2,4,8"},
-    };
-}
-
-void MonitorSettings::fromJson(const nlohmann::json &j)
-{
-    HubSettingsT<HubMonitorConfig>::fromJson(j);
-    if (_config.averaging != 0 && _config.averaging != 2 &&
-        _config.averaging != 4 && _config.averaging != 8)
-        _config.averaging = 0;
-}
-
-void MonitorSettings::onConfigChanged()
-{
-    profilerSetAveraging(_config.averaging);
-}
-
-// ===========================================================================
 // ports
 // ===========================================================================
 
@@ -467,11 +441,40 @@ static bool oneOf(const String &value, std::initializer_list<const char *> allow
     return false;
 }
 
-// Clamp hidden website preferences after loading from flash or /api/settings.
-static void sanitizeWebsite(HubWebsiteConfig &c)
+// Apply partial website settings through the normal macro loader, then validate.
+void WebsiteSettings::fromJson(const nlohmann::json &j)
 {
-    if (!oneOf(c.theme, {"dark", "light"}))
-        c.theme = "dark";
+    HubSettingsT<HubWebsiteConfig>::fromJson(j);
+    if (!oneOf(_config.theme, {"dark", "light"}))
+        _config.theme = "dark";
+}
+
+// Store the light/dark theme selected by the UI.
+void WebsiteSettings::setTheme(const String &theme)
+{
+    if (theme == "dark" || theme == "light")
+        _config.theme = theme;
+}
+
+// ===========================================================================
+// profiler
+// ===========================================================================
+
+std::vector<HubSettingField> ProfilerSettings::uiSchema()
+{
+    return {
+        {.type = F::T::Choice, .key = "averaging", .label = "Profiler averaging",
+         .help = "Newest sample, or mean of the newest 2, 4 or 8 samples",
+         .options = "0,2,4,8"},
+    };
+}
+
+// Clamp profiler options and graph preferences after loading from flash or
+// /api/settings.
+static void sanitizeProfiler(HubProfilerConfig &c)
+{
+    if (c.averaging != 0 && c.averaging != 2 && c.averaging != 4 && c.averaging != 8)
+        c.averaging = 0;
     if (!oneOf(c.mini_metric, {"ma", "mw", "volts"}))
         c.mini_metric = "ma";
     c.graph_metric.replace(" ", "");
@@ -493,40 +496,60 @@ static void sanitizeWebsite(HubWebsiteConfig &c)
         c.graph_metric = graphMetric;
     else
         c.graph_metric = "volts,ma,mw";
-    if (c.graph_hz != 1 && c.graph_hz != 10 && c.graph_hz != 100)
-        c.graph_hz = 10;
-    if (c.graph_window < 10 || c.graph_window > 57600)
+    // HISTORICAL: graph_window and graph_scale are no longer used by the web
+    // UI (see HubProfilerConfig); to be removed.
+    if (c.graph_window < 10 || c.graph_window > 3600)
         c.graph_window = 10;
     if (!oneOf(c.graph_scale, {"linear", "log"}))
         c.graph_scale = "linear";
 }
 
-// Apply partial website settings through the normal macro loader, then validate.
-void WebsiteSettings::fromJson(const nlohmann::json &j)
+// Apply partial profiler settings through the normal macro loader, then validate.
+void ProfilerSettings::fromJson(const nlohmann::json &j)
 {
-    HubSettingsT<HubWebsiteConfig>::fromJson(j);
-    sanitizeWebsite(_config);
+    HubSettingsT<HubProfilerConfig>::fromJson(j);
+    sanitizeProfiler(_config);
 }
 
-// Store the light/dark theme selected by the UI.
-void WebsiteSettings::setTheme(const String &theme)
+// Re-apply profiler averaging immediately after a settings change.
+void ProfilerSettings::onConfigChanged()
 {
-    if (theme == "dark" || theme == "light")
-        _config.theme = theme;
+    profilerSetAveraging(_config.averaging);
 }
 
-// Compact JSON for hidden UI preferences included in /api/status.
-String WebsiteSettings::uiPrefsJson() const
+// Mark dirty and restart the countdown; loop() does the save.
+void ProfilerSettings::requestSave()
 {
-    String j = "{\"mini_graphs\":";
-    j += _config.mini_graphs ? "true" : "false";
+    _dirtyAt = millis();
+    _dirty = true;
+}
+
+// Save once nothing has changed for PROFILER_SAVE_DELAY_MS. The flag is
+// cleared before saving, so a change that lands during the save marks the
+// group dirty again and is saved next time.
+void ProfilerSettings::loop()
+{
+    if (!_dirty || millis() - _dirtyAt < PROFILER_SAVE_DELAY_MS)
+        return;
+    _dirty = false;
+    save();
+}
+
+// Compact JSON for hidden UI preferences, plus the averaging the graphs
+// apply, included in /api/status.
+String ProfilerSettings::uiPrefsJson() const
+{
+    String j = "{\"averaging\":" + String(_config.averaging);
     j += ",\"mini_metric\":\"" + _config.mini_metric + "\"";
     j += ",\"graph_metric\":\"" + _config.graph_metric + "\"";
-    j += ",\"graph_hz\":" + String(_config.graph_hz);
-    j += ",\"graph_window\":" + String(_config.graph_window);
-    j += ",\"graph_scale\":\"" + _config.graph_scale + "\"";
     j += ",\"graph_voltage_zero\":";
     j += _config.graph_voltage_zero ? "true" : "false";
+    // HISTORICAL: mini_graphs, graph_window, graph_scale and graph_y_lock are
+    // no longer used by the web UI (see HubProfilerConfig); to be removed.
+    j += ",\"mini_graphs\":";
+    j += _config.mini_graphs ? "true" : "false";
+    j += ",\"graph_window\":" + String(_config.graph_window);
+    j += ",\"graph_scale\":\"" + _config.graph_scale + "\"";
     j += ",\"graph_y_lock\":";
     j += _config.graph_y_lock ? "true" : "false";
     return j + "}";

@@ -10,7 +10,8 @@
 //
 // This layer only routes requests. Everything that reads or changes the
 // hardware is supplied by main.ino as callbacks, so the server never touches
-// the port or sensor globals directly.
+// the port or sensor globals directly. The one exception is the port history,
+// streamed straight out of the PSRAM history (g_history).
 #pragma once
 #include <Arduino.h>
 #include <functional>
@@ -21,8 +22,6 @@ public:
     using StatusFn = std::function<String()>;              // GET /api/status body
     using ThemeFn = std::function<void(const String &)>;   // store "dark" | "light"
     using PortFn = std::function<void(int, bool)>;         // switch port n (1..6)
-    // stream, port, hz, seconds, since_ms, absolute_time, offset_seconds
-    using HistoryFn = std::function<void(Print &, int, int, int, uint32_t, bool, uint32_t)>;
     using EnvHistoryFn = std::function<void(Print &, uint32_t, bool)>; // stream, since_ms, absolute_time
     using SchedGetFn = std::function<String()>;            // GET /api/schedules body
     using SchedSetFn = std::function<void(const String &)>; // store schedules from a JSON body
@@ -43,7 +42,7 @@ public:
     // Register every route and start listening. Call once the network is up;
     // later calls do nothing.
     void begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
-               HistoryFn historyFn, EnvHistoryFn envHistoryFn,
+               EnvHistoryFn envHistoryFn,
                SchedGetFn schedGetFn, SchedSetFn schedSetFn);
 
 private:

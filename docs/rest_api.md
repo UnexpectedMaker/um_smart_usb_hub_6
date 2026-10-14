@@ -113,7 +113,7 @@ apply nothing. See *Current limitations*.
 | `GET` | `/api/ports/{n}` | One port in detail, including its schedule |
 | `GET` | `/api/ports/{n}/schedule` | One port's schedule |
 | `GET` | `/api/status` | Combined payload backing the web UI |
-| `GET` | `/api/history` | PSRAM-backed port trend samples for the web UI |
+| `GET` | `/api/history` | One page of a port's 100 Hz readings and events from PSRAM, in binary, for the web UI |
 | `GET` | `/api/environment/history` | PSRAM-backed temperature/humidity trend samples for the web UI |
 | `GET` | `/api/schedules` | All six ports' schedules |
 | `GET` | `/api/settings/schema` | Settings structure + current values |
@@ -509,10 +509,10 @@ curl http://192.168.1.100/api/status
   "rst": "POWERON",
   "theme": "dark",
   "ui": {
+    "averaging": 0,
     "mini_graphs": true,
     "mini_metric": "ma",
     "graph_metric": "volts,ma,mw",
-    "graph_hz": 10,
     "graph_window": 10,
     "graph_scale": "linear",
     "graph_voltage_zero": false,
@@ -579,77 +579,100 @@ curl http://192.168.1.100/api/status
 | `temp.c`, `temp.h` | `sensors.temp_c`, `sensors.humidity` |
 | `main5v`, `upstream5v` | `power.main_5v`, `power.upstream_5v` |
 | `theme` (UI only) | — |
-| `ui` (hidden UI preferences) | — |
+| `ui` (hidden UI preferences, and `averaging`; `mini_graphs`, `graph_window`, `graph_scale` and `graph_y_lock` are historical and will be removed) | — |
 
 ---
 
 ## GET `/api/history`
 
-Port trend samples for the web UI's graph, read from PSRAM history captured
-from the profiler cache. Voltage and current are stored; power is calculated
-from those values when the history response is built. Capture is attempted at
-100 Hz, then retained in three fixed tiers per port:
+One page of one port's readings and events from the PSRAM history, in binary,
+for the web UI's graph.
 
-| Tier | Retained window |
-|---|---|
-| `100 Hz` | `10 min` |
-| `10 Hz` | `20 min` |
-| `1 Hz` | `16 h` |
+The profiler writes every port's reading straight into the history every 10 ms
+(100 Hz), and keeps 60 minutes per port. A period with no reading (port off,
+no monitor, failed read, profiler cycle missed) is stored as an invalid
+reading. Each reading's time comes from its **capture count**: the number of
+10 ms periods since boot, so its time is count × 10 ms.
+
+A page holds up to 10 minutes (60,000 readings). The web UI gets a port's
+history like this:
+
+1. **No `before` or `after`:** the newest 10 minutes.
+2. **`before=<count>`:** the 10 minutes before that count, with `<count>` the
+   oldest reading the browser holds. Repeated until a page comes back with no
+   readings: the hub has no older ones. A shorter page is still sent; the
+   empty one after it stops the requests.
+3. **`after=<count>`:** everything newer than that count, with `<count>` the
+   newest reading the browser holds. Polled for live updates.
 
 ```
-curl 'http://192.168.1.100/api/history?port=6&hz=10&window=60'
+curl -o page.bin 'http://192.168.1.100/api/history?port=6'
+curl -o page.bin 'http://192.168.1.100/api/history?port=6&before=420000'
+curl -o page.bin 'http://192.168.1.100/api/history?port=6&after=480123'
 ```
 
 Parameters:
 
 | Param | Values | Default |
 |---|---|---|
-| `port` | `1..6`, or `all` for all ports | `1` |
-| `hz` | `100`, `10`, `1` | `10` |
-| `window` | seconds, clamped to the selected tier | `10` |
-| `offset` | seconds back from the live head, clamped to the data currently stored | `0` |
-| `abs` | `1` to return absolute `millis()` timestamps | relative offsets |
-| `since` | optional absolute `millis()` timestamp; only newer points are returned | full window |
+| `port` | `1..6`, required | — |
+| `before` | capture count | newest page |
+| `after` | capture count | newest page |
+| `max` | most readings to send, `1`–`60000` | `60000` |
 
-The response is compact for the browser: each point is
-`[ms_from_now, volts, ma, mw]` by default, or `[ms, volts, ma, mw]` when
-`abs=1` is supplied.
+`before` and `after` can't be used together. A missing or bad `port`, or a bad
+parameter, returns HTTP 400. If PSRAM allocation failed at boot, there's no
+history and the request returns HTTP 503.
 
-```json
-{
-  "ok": true,
-  "port": 6,
-  "hz": 10,
-  "capture_hz": 100,
-  "stored_hz": 10,
-  "window_s": 60,
-  "max_window_s": 1200,
-  "available_s": 420,
-  "tiers": [
-    { "hz": 100, "max_window_s": 600, "available_s": 600 },
-    { "hz": 10, "max_window_s": 1200, "available_s": 420 },
-    { "hz": 1, "max_window_s": 57600, "available_s": 420 }
-  ],
-  "offset_s": 0,
-  "now_ms": 12345678,
-  "time": "relative",
-  "points": [
-    [-9900, 5.051, 118.3, 597.5],
-    [-9800, 5.050, 119.0, 601.0]
-  ]
-}
-```
+If `after` is newer than anything the hub holds, the hub has restarted and its
+capture counts started again from 0: it sends the newest page, whose first
+count is at or below `after`, so the browser knows to drop what it held. If
+`after` is older than anything the hub holds, the page starts at the oldest
+reading it holds.
 
-When `port=all`, the response reports `"port":"all"` and uses a `ports` array,
-each with its own `points` array in the same point format.
+### Page layout
 
-`max_window_s` is the selected tier's full PSRAM capacity; `available_s` is the
-portion currently populated for that port. `tiers` gives the same lightweight
-fill summary for each retained tier without including extra point arrays. Long
-windows are decimated before being streamed so the ESP32 does not allocate a
-large response body. The history is PSRAM-only, so it survives UI reconnects
-and graph panning but not device reboot or power loss. If PSRAM allocation
-failed, `ok` is `false` and `points` is empty.
+`Content-Type: application/octet-stream`. All values little-endian.
+
+| Part | Field | Size |
+|---|---|---|
+| Header | Capture count of the first reading | 4 bytes |
+| | Number of events | 2 bytes |
+| | Number of readings | 4 bytes |
+| Events | Capture count, then event code | 5 bytes each, oldest first |
+| Readings | One reading per capture count, from the first | 3 bytes each, oldest first |
+
+The events are the port's events whose capture count falls within the page's
+readings.
+
+Event codes:
+
+| Code | Event |
+|---|---|
+| `1` | Power off |
+| `2` | Power on |
+| `3` | Device removed |
+| `4` | Device inserted |
+
+Each reading is 24 bits, most significant byte first:
+
+| Bits | Field |
+|---|---|
+| 23 | Valid: `0` for an invalid reading (all bits 0) |
+| 22–13 | Bus voltage, 8 mV per step (0–8.184 V) |
+| 12–0 | Shunt voltage, signed, 40 µV per step |
+
+Current in mA = shunt steps × 0.04 mV ÷ the shunt resistance (0.1 Ω), so 0.4 mA
+per step. Power is volts × mA.
+
+Readings the hub overwrites while a page is being sent (only the oldest ones,
+once the 60 minutes are full) are sent as invalid.
+
+History is only ever returned for one port at a time. `port=all` (every
+port's history in one response) has been removed and returns HTTP 400.
+
+The history is PSRAM-only, so it survives UI reconnects but not a device
+reboot or power loss.
 
 ---
 
@@ -843,16 +866,6 @@ curl http://192.168.1.100/api/settings/schema
       ]
     },
     {
-      "name": "monitor",
-      "label": "Monitor",
-      "values": { "averaging": 0 },
-      "fields": [
-        { "type": "choice", "key": "averaging", "label": "Profiler averaging",
-          "help": "Newest sample, or mean of the newest 2, 4 or 8 samples",
-          "options": ["0", "2", "4", "8"] }
-      ]
-    },
-    {
       "name": "ports",
       "label": "Ports",
       "values": {
@@ -864,6 +877,21 @@ curl http://192.168.1.100/api/settings/schema
           "help": "Ports switched on at startup", "value": "boot" },
         { "type": "port_bools", "key": "power_mode", "label": "Auto power on connect",
           "help": "On when a device is plugged in, off when unplugged", "value": "connect" }
+      ]
+    },
+    {
+      "name": "profiler",
+      "label": "Profiler",
+      "values": {
+        "averaging": 0,
+        "mini_graphs": false, "mini_metric": "ma", "graph_metric": "volts,ma,mw",
+        "graph_window": 10, "graph_scale": "linear",
+        "graph_voltage_zero": false, "graph_y_lock": false
+      },
+      "fields": [
+        { "type": "choice", "key": "averaging", "label": "Profiler averaging",
+          "help": "Newest sample, or mean of the newest 2, 4 or 8 samples",
+          "options": ["0", "2", "4", "8"] }
       ]
     }
   ]
@@ -880,8 +908,13 @@ curl http://192.168.1.100/api/settings/schema
   share one key: a port's button is on when its entry equals that row's
   `value`. Turning a port on in one row turns the same port off in the others;
   a port on in no row is `"manual"`, shown as **M** in the group heading.
-- `monitor.averaging` controls the INA profiler output: `0` returns the newest
+- `profiler.averaging` controls the INA profiler output: `0` returns the newest
   sample, while `2`, `4` or `8` returns the mean of that many newest samples.
+- The `profiler` group's graph preferences (`mini_graphs` through
+  `graph_y_lock`) are in `values` but have no `fields`: they're set by the web
+  UI's graph controls, not the Settings panel. `mini_graphs`, `graph_window`,
+  `graph_scale` and `graph_y_lock` are historical: the web UI no longer uses
+  them, and they'll be removed.
 - `power_mode` is one value per port:
   - `"manual"` — only switched by you (web UI, API, button, schedules)
   - `"boot"` — powered on at startup
@@ -893,8 +926,7 @@ curl http://192.168.1.100/api/settings/schema
 - Group order follows registration order and is **not guaranteed stable** — key
   off `name`, not position.
 - The `schedules` and `website` groups are hidden from this endpoint. Schedules
-  have their own endpoints; the theme has `/api/theme`; hidden graph UI
-  preferences are still accepted by `POST /api/settings` under `website`.
+  have their own endpoints; the theme has `/api/theme`.
 
 ---
 
@@ -1059,7 +1091,9 @@ so `invalid` tells you which rules it will refuse to act on:
 
 Partial update: send only the groups and keys you want changed. Each named group
 is updated, its change handler fires (so e.g. a new `utc_offset` re-applies the
-timezone immediately), and each group sent is saved. Groups you don't send aren't touched.
+timezone immediately), and each group sent is saved — except `profiler`, which is
+saved to flash once it has gone 3 seconds without a change. Groups you don't send
+aren't touched.
 
 ```
 curl -X POST 'http://192.168.1.100/api/settings' \
@@ -1067,21 +1101,19 @@ curl -X POST 'http://192.168.1.100/api/settings' \
   -d '{"leds":{"brightness":120},"location":{"utc_offset":10,"city":"Melbourne"}}'
 ```
 
-Profiler averaging is stored in the visible `monitor` group:
+Profiler options and the web UI's graph preferences are in the `profiler`
+group:
 
 ```bash
 curl -X POST http://192.168.1.100/api/settings \
   -H 'Content-Type: application/json' \
-  -d '{"monitor":{"averaging":4}}'
+  -d '{"profiler":{"averaging":4}}'
 ```
 
-Hidden web UI preferences, such as graph controls and mini graph visibility,
-live in the existing `website` settings group:
-
 ```bash
 curl -X POST http://192.168.1.100/api/settings \
   -H 'Content-Type: application/json' \
-  -d '{"website":{"mini_graphs":true,"mini_metric":"ma","graph_metric":"volts,ma,mw","graph_hz":10,"graph_window":10,"graph_scale":"linear","graph_voltage_zero":false,"graph_y_lock":false}}'
+  -d '{"profiler":{"mini_graphs":true,"mini_metric":"ma","graph_metric":"volts,ma,mw","graph_window":10,"graph_scale":"linear","graph_voltage_zero":false,"graph_y_lock":false}}'
 ```
 
 ```json
@@ -1091,9 +1123,8 @@ curl -X POST http://192.168.1.100/api/settings \
 - The response is **always** `{"ok":true}`, even for unknown group names, and
   even for malformed JSON — in which case nothing is written. Re-read
   `/api/settings/schema` to confirm what actually landed.
-- Visible group names and keys match `/api/settings/schema` exactly. The hidden
-  `website` group also accepts the graph preference keys shown above.
-- `website.graph_metric` is a comma-separated subset of `volts`, `ma` and `mw`;
+- Group names and keys match `/api/settings/schema` exactly.
+- `profiler.graph_metric` is a comma-separated subset of `volts`, `ma` and `mw`;
   an empty string hides every trace. Legacy values `combined`, `volts`, `ma`
   and `mw` are still accepted.
 - Keys you leave out keep their current values.

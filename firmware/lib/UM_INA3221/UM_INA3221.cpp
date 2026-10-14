@@ -90,26 +90,27 @@ float INA3221::get_shunt_resistor(uint8_t channel)
 	return valid_channel(channel) ? _shunt[channel - 1] : NAN;
 }
 
-float INA3221::shunt_voltage_mV(uint8_t channel)
+int16_t INA3221::shunt_voltage_raw(uint8_t channel)
 {
 	if (!valid_channel(channel))
-		return NAN;
-	uint8_t reg = INA3221_REG_SHUNT_CH1 + (channel - 1) * 2;
-	// 13-bit signed value held in bits [15:3]; bottom 3 bits read as 0.
-	int16_t raw = (int16_t)i2c_read16(reg);
-	return (raw >> 3) * INA3221_SHUNT_LSB_mV;
+		return 0;
+	return (int16_t)i2c_read16(INA3221_REG_SHUNT_CH1 + (channel - 1) * 2);
 }
 
-float INA3221::bus_voltage_V(uint8_t channel)
+int16_t INA3221::bus_voltage_raw(uint8_t channel)
 {
 	if (!valid_channel(channel))
-		return NAN;
-	uint8_t reg = INA3221_REG_BUS_CH1 + (channel - 1) * 2;
-	int16_t raw = (int16_t)i2c_read16(reg);
+		return 0;
+	return (int16_t)i2c_read16(INA3221_REG_BUS_CH1 + (channel - 1) * 2);
+}
+
+// 13-bit signed value held in bits [15:3]; bottom 3 bits read as 0.
+float INA3221::raw_to_bus_V(int16_t raw)
+{
 	return (raw >> 3) * INA3221_BUS_LSB_V;
 }
 
-float INA3221::current_mA(uint8_t channel)
+float INA3221::raw_to_current_mA(uint8_t channel, int16_t raw)
 {
 	if (!valid_channel(channel))
 		return NAN;
@@ -117,7 +118,28 @@ float INA3221::current_mA(uint8_t channel)
 	if (r <= 0.0f)
 		return NAN;
 	// mV / ohms = mA
-	return shunt_voltage_mV(channel) / r;
+	return ((raw >> 3) * INA3221_SHUNT_LSB_mV) / r;
+}
+
+float INA3221::shunt_voltage_mV(uint8_t channel)
+{
+	if (!valid_channel(channel))
+		return NAN;
+	return (shunt_voltage_raw(channel) >> 3) * INA3221_SHUNT_LSB_mV;
+}
+
+float INA3221::bus_voltage_V(uint8_t channel)
+{
+	if (!valid_channel(channel))
+		return NAN;
+	return raw_to_bus_V(bus_voltage_raw(channel));
+}
+
+float INA3221::current_mA(uint8_t channel)
+{
+	if (!valid_channel(channel))
+		return NAN;
+	return raw_to_current_mA(channel, shunt_voltage_raw(channel));
 }
 
 float INA3221::current_A(uint8_t channel) { return current_mA(channel) / 1000.0f; }

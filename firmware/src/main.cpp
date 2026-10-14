@@ -33,6 +33,7 @@
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <time.h>
 #include <vector>
 #include <algorithm>
@@ -93,7 +94,7 @@ HubConfig config;
 // port. Every channel has a 100 mOhm shunt.
 INA3221 ina_a; // 0x40, ports 1-3
 INA3221 ina_b; // 0x41, ports 4-6
-#define INA_SHUNT_OHMS 0.1f
+#define INA_SHUNT_OHMS 0.1f // the web page's graph uses the same value (HubWebUI.h, SHUNT_MA)
 
 // Temperature / humidity. The AHT20 is register-compatible with the DHT20.
 DHT20 aht;
@@ -148,7 +149,8 @@ void serviceExpander()
 bool main5vPresent() { return digitalRead(MAIN_5V_SENSE_PIN) == HIGH; }
 bool upstream5vPresent() { return digitalRead(UPSTREAM_5V_SENSE_PIN) == HIGH; }
 
-// One port's measurements. ok = false when that port's INA3221 isn't fitted.
+// One port's measurements. ok = false when that port's INA3221 isn't fitted, or
+// the read failed.
 struct PortReading
 {
     bool ok;
@@ -164,8 +166,17 @@ PortReading readPort(uint8_t i)
     uint8_t ch = 3 - (i % 3);
     if (!present)
         return {false, 0.0f, 0.0f, 0.0f};
-    I2CLock lock;
-    return {true, chip.bus_voltage_V(ch), chip.current_mA(ch), chip.power_mW(ch)};
+    float volts, ma;
+    {
+        I2CLock lock;
+        volts = chip.bus_voltage_V(ch);
+        if (chip.last_error() != INA3221_OK)
+            return {false, 0.0f, 0.0f, 0.0f};
+        ma = chip.current_mA(ch);
+        if (chip.last_error() != INA3221_OK)
+            return {false, 0.0f, 0.0f, 0.0f};
+    }
+    return {true, volts, ma, volts * ma}; // mW from this same V and I
 }
 
 // Whether the I/O expander answers on the bus.
@@ -176,109 +187,123 @@ bool expanderConnected()
 }
 
 // ---- Port profiling ----
-// profilerStart() starts a task that samples every powered port at
-// PROFILE_HZ and keeps its last PROFILE_SAMPLES samples in a ring buffer per
-// port. profilerGetPort() returns a port's newest sample, or the average of
-// its newest 2, 4 or 8 (profilerSetAveraging()). The task always samples at
-// PROFILE_HZ; a caller wanting a lower rate calls profilerGetPort() less often.
-#define PROFILE_HZ 100
-#define PROFILE_SAMPLES 8 // room for a 2, 4 or 8 sample average
+// profilerStart(), called once from setup(), starts the task that runs for as
+// long as the hub is on. It reads every powered port at 100 Hz
+// (PortHistory::SAMPLE_HZ) and writes each 10 ms period straight into the PSRAM history (g_history),
+// one slot per port. It's the only thing that writes the history, and it
+// records the port events (power off/on, device removed/inserted) at the
+// period they're seen. profilerGetPort() returns a port's newest reading from
+// the history, or the average of its newest 2, 4 or 8 (profilerSetAveraging());
+// if the profiler isn't running (no PSRAM history) it reads the port directly.
+// HISTORICAL: PROFILE_HZ is no longer used by the code (the rate is
+// PortHistory::SAMPLE_HZ); kept for now, to be removed.
+#define PROFILE_HZ PortHistory::SAMPLE_HZ
+#define PROFILE_LOOKBACK 8 // newest slots profilerGetPort() looks at: room for an 8 average
 
-// One sample: bus volts, milliamps, and milliwatts (V x mA).
+// One reading as profilerGetPort() returns it: bus volts, milliamps, and
+// milliwatts (V x mA).
 struct ProfileSample
 {
     float volts, ma, mw;
 };
 
-// One port's ring buffer: head is the next slot to write, count how many
-// slots hold a sample.
-struct ProfileRing
+TaskHandle_t g_profileTask = nullptr; // null if it couldn't start
+volatile uint8_t g_profileAvg = 0;    // 0 = newest reading only
+
+// The capture count of the 10 ms period we're in: 10 ms periods since boot.
+uint32_t captureCountNow()
 {
-    ProfileSample samples[PROFILE_SAMPLES];
-    uint8_t head;
-    uint8_t count;
-};
-
-ProfileRing g_profile[NUM_PORTS] = {};
-portMUX_TYPE g_profileMux = portMUX_INITIALIZER_UNLOCKED; // guards g_profile
-TaskHandle_t g_profileTask = nullptr;                     // null when stopped
-volatile bool g_profileStop = false;                      // set by profilerStop()
-volatile uint8_t g_profileAvg = 0;                        // 0 = newest sample only
-
-// The sampling task. Every 1/PROFILE_HZ s it reads V and I from each powered
-// port — two register reads, holding the bus for just that port — and stores
-// them with P = V x I. Unpowered ports aren't read, and their ring is emptied.
-// When asked to stop it checks between cycles, so it never exits holding the
-// bus: it empties every ring, clears its handle and deletes itself.
-void profilerTask(void *)
-{
-    TickType_t wake = xTaskGetTickCount();
-    while (!g_profileStop)
-    {
-        for (uint8_t i = 0; i < NUM_PORTS; i++)
-        {
-            bool present = (i < 3) ? g_inaAok : g_inaBok;
-            if (!ports[i].isEnabled() || !present)
-            {
-                portENTER_CRITICAL(&g_profileMux);
-                g_profile[i].count = 0;
-                portEXIT_CRITICAL(&g_profileMux);
-                continue;
-            }
-
-            // Same chip and channel mapping as readPort().
-            INA3221 &chip = (i < 3) ? ina_a : ina_b;
-            uint8_t ch = 3 - (i % 3);
-            ProfileSample s;
-            {
-                I2CLock lock;
-                s.volts = chip.bus_voltage_V(ch);
-                s.ma = chip.current_mA(ch);
-            }
-            s.mw = s.volts * s.ma;
-
-            portENTER_CRITICAL(&g_profileMux);
-            ProfileRing &r = g_profile[i];
-            r.samples[r.head] = s;
-            r.head = (r.head + 1) % PROFILE_SAMPLES;
-            if (r.count < PROFILE_SAMPLES)
-                r.count++;
-            portEXIT_CRITICAL(&g_profileMux);
-        }
-        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000 / PROFILE_HZ));
-    }
-
-    portENTER_CRITICAL(&g_profileMux);
-    for (auto &r : g_profile)
-        r.head = r.count = 0;
-    portEXIT_CRITICAL(&g_profileMux);
-    g_profileTask = nullptr;
-    vTaskDelete(nullptr);
+    return (uint32_t)(esp_timer_get_time() / (1000LL * PortHistory::SAMPLE_MS));
 }
 
-// Start the profiling task. Does nothing if it's already running.
+// Port i's raw INA3221 registers to volts and mA. Same chip and channel
+// mapping as readPort(). Used by profilerGetPort().
+void rawToReading(uint8_t i, int16_t bus, int16_t shunt, float &volts, float &ma)
+{
+    INA3221 &chip = (i < 3) ? ina_a : ina_b;
+    uint8_t ch = 3 - (i % 3);
+    volts = INA3221::raw_to_bus_V(bus);
+    ma = chip.raw_to_current_mA(ch, shunt);
+}
+
+// The sampling task. Once per 10 ms period it reads the bus and shunt voltage
+// registers of each powered port — holding the bus for just that port — and
+// writes every port's slot for that period into the history: the raw reading,
+// or invalid when the port is off, has no monitor or the read failed. Power
+// and device changes since the last period are added as events at this one.
+// It sleeps to the middle of the next period, so a cycle that runs late leaves
+// the period it missed as invalid instead of shifting readings in time.
+// It never exits.
+void profilerTask(void *)
+{
+    bool wasOn[NUM_PORTS], wasIn[NUM_PORTS];
+    for (uint8_t i = 0; i < NUM_PORTS; i++)
+    {
+        wasOn[i] = ports[i].isEnabled();
+        wasIn[i] = ports[i].isOccupied();
+    }
+
+    const int64_t periodUs = 1000LL * PortHistory::SAMPLE_MS;
+    for (;;)
+    {
+        uint32_t count = captureCountNow();
+        PortHistory::Reading readings[NUM_PORTS];
+        for (uint8_t i = 0; i < NUM_PORTS; i++)
+        {
+            readings[i] = {false, 0, 0};
+            bool on = ports[i].isEnabled();
+            bool in = ports[i].isOccupied();
+            if (on != wasOn[i])
+            {
+                g_history.addEvent(i, count, on ? PortHistory::EVENT_POWER_ON : PortHistory::EVENT_POWER_OFF);
+                wasOn[i] = on;
+            }
+            if (in != wasIn[i])
+            {
+                g_history.addEvent(i, count, in ? PortHistory::EVENT_DEVICE_INSERTED : PortHistory::EVENT_DEVICE_REMOVED);
+                wasIn[i] = in;
+            }
+
+            bool present = (i < 3) ? g_inaAok : g_inaBok;
+            if (!on || !present)
+                continue;
+            INA3221 &chip = (i < 3) ? ina_a : ina_b;
+            uint8_t ch = 3 - (i % 3);
+            I2CLock lock;
+            int16_t bus = chip.bus_voltage_raw(ch);
+            if (chip.last_error() != INA3221_OK)
+                continue;
+            int16_t shunt = chip.shunt_voltage_raw(ch);
+            if (chip.last_error() != INA3221_OK)
+                continue;
+            readings[i] = {true, bus, shunt};
+        }
+        g_history.write(count, readings);
+
+        int64_t us = esp_timer_get_time();
+        int64_t wakeUs = (us / periodUs + 1) * periodUs + periodUs / 2;
+        TickType_t ticks = pdMS_TO_TICKS((uint32_t)((wakeUs - us + 999) / 1000));
+        vTaskDelay(ticks ? ticks : 1);
+    }
+}
+
+// Start the profiling task, once, from setup(). Does nothing if it's already
+// running, or if the PSRAM history couldn't be allocated (it has nowhere to
+// write).
 void profilerStart()
 {
     if (g_profileTask)
         return;
-    g_profileStop = false;
+    if (!g_history.available())
+    {
+        Serial.println("[prof] no PSRAM history — profiler not started");
+        return;
+    }
     // Priority 2, above loop(), so samples stay on time.
     xTaskCreatePinnedToCore(profilerTask, "profiler", 4096, nullptr, 2, &g_profileTask, 1);
 }
 
-// Stop the profiling task and wait (at most one cycle, 1/PROFILE_HZ s) until
-// it has finished. Afterwards profilerGetPort() returns {0, 0, 0} for every
-// port. Does nothing if it isn't running.
-void profilerStop()
-{
-    if (!g_profileTask)
-        return;
-    g_profileStop = true;
-    while (g_profileTask)
-        vTaskDelay(1);
-}
-
-// How many samples profilerGetPort() averages: 0 (newest sample only), 2, 4
+// How many readings profilerGetPort() averages: 0 (newest reading only), 2, 4
 // or 8. Returns false, changing nothing, for any other value.
 bool profilerSetAveraging(int samples)
 {
@@ -288,32 +313,41 @@ bool profilerSetAveraging(int samples)
     return true;
 }
 
-// Port i's (0-5) newest sample, or the average of its newest 2, 4 or 8 as set
-// by profilerSetAveraging() — fewer if the port hasn't been on long enough to
-// fill them. {0, 0, 0} if the port is off, has no monitor, or hasn't been
-// sampled yet.
+// Port i's (0-5) reading; {0, 0, 0} if the port is off. While the profiler is
+// running: from the history, the newest valid reading, or the average of the
+// newest 2, 4 or 8 as set by profilerSetAveraging(), taken from the newest
+// PROFILE_LOOKBACK slots and skipping invalid ones — so fewer just after the
+// port powers on; {0, 0, 0} if none of those slots is valid. It only reads the
+// history, so any number of callers get the same answer. If the profiler
+// isn't running (no PSRAM history): read straight from the INA3221, as
+// readPort() does, with no averaging; {0, 0, 0} if the port has no monitor.
 ProfileSample profilerGetPort(int i)
 {
     ProfileSample out = {0.0f, 0.0f, 0.0f};
     if (i < 0 || i >= NUM_PORTS || !ports[i].isEnabled())
         return out;
-
-    // Copy the newest samples out under the lock, then average them outside it.
-    uint8_t want = g_profileAvg ? g_profileAvg : 1;
-    ProfileSample newest[PROFILE_SAMPLES];
-    uint8_t n;
-    portENTER_CRITICAL(&g_profileMux);
-    const ProfileRing &r = g_profile[i];
-    n = (r.count < want) ? r.count : want;
-    for (uint8_t k = 0; k < n; k++)
-        newest[k] = r.samples[(r.head + PROFILE_SAMPLES - 1 - k) % PROFILE_SAMPLES];
-    portEXIT_CRITICAL(&g_profileMux);
-
-    for (uint8_t k = 0; k < n; k++)
+    if (!g_profileTask)
     {
-        out.volts += newest[k].volts;
-        out.ma += newest[k].ma;
-        out.mw += newest[k].mw;
+        PortReading r = readPort(i);
+        if (r.ok)
+            out = {r.volts, r.ma, r.mw};
+        return out;
+    }
+
+    uint8_t want = g_profileAvg ? g_profileAvg : 1;
+    PortHistory::Reading newest[PROFILE_LOOKBACK];
+    uint8_t got = g_history.latest(i, PROFILE_LOOKBACK, newest);
+    uint8_t n = 0;
+    for (uint8_t k = 0; k < got && n < want; k++)
+    {
+        if (!newest[k].valid)
+            continue;
+        float volts, ma;
+        rawToReading(i, newest[k].bus, newest[k].shunt, volts, ma);
+        out.volts += volts;
+        out.ma += ma;
+        out.mw += volts * ma;
+        n++;
     }
     if (n)
     {
@@ -330,7 +364,8 @@ bool monitorPresent(uint8_t i)
     return (i < 3) ? g_inaAok : g_inaBok;
 }
 
-// Latest profiler-backed reading for port i (0-based). This does not touch I2C.
+// Reading for port i (0-based) via profilerGetPort(): the history while the
+// profiler runs, otherwise read straight from the INA3221.
 PortReading profiledPortReading(uint8_t i)
 {
     if (i >= NUM_PORTS || !monitorPresent(i))
@@ -837,7 +872,7 @@ String buildStatusJson()
     j += ",\"fw\":\"" HUB_FW_VERSION "\"";
     j += ",\"rst\":\"" + String(resetReasonStr(esp_reset_reason())) + "\"";
     j += ",\"theme\":\"" + g_website.config().theme + "\"";
-    j += ",\"ui\":" + g_website.uiPrefsJson();
+    j += ",\"ui\":" + g_profiler.uiPrefsJson();
     j += ",\"ip\":\"" + (up ? WiFi.localIP().toString() : String()) + "\"";
     j += ",\"uptime_s\":" + String(millis() / 1000);
     j += ",\"heap\":" + String((uint32_t)ESP.getFreeHeap());
@@ -1120,17 +1155,6 @@ void startNetServices()
             if (n >= 1 && n <= NUM_PORTS)
                 ports[n - 1].setEnabled(on);
         },
-        [](Print &out, int n, int hz, int seconds, uint32_t sinceMs,
-           bool absoluteTime, uint32_t offsetSeconds) {
-            if (n == 0)
-            {
-                g_history.writeJsonAll(out, hz, seconds, millis(), sinceMs, absoluteTime, offsetSeconds);
-                return;
-            }
-            if (n < 1 || n > NUM_PORTS)
-                n = 1;
-            g_history.writeJson(out, n - 1, hz, seconds, millis(), sinceMs, absoluteTime, offsetSeconds);
-        },
         [](Print &out, uint32_t sinceMs, bool absoluteTime) {
             g_envHistory.writeJson(out, millis(), sinceMs, absoluteTime);
         },
@@ -1263,7 +1287,7 @@ void printInfo()
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
         USBPort &port = ports[i];
-        PortReading r = readPort(i);
+        PortReading r = profiledPortReading(i);
         char volts[12] = "--", amps[16] = "--", watts[16] = "--";
         if (r.ok)
         {
@@ -1346,7 +1370,7 @@ void handleSerialCommand(String cmd)
     {
         for (uint8_t i = 0; i < NUM_PORTS; i++)
         {
-            PortReading r = readPort(i);
+            PortReading r = profiledPortReading(i);
             if (r.ok)
                 Serial.printf("  port %u: %.3f V  %.1f mA  %.1f mW\r\n", i + 1, r.volts, r.ma, r.mw);
             else
@@ -1470,14 +1494,17 @@ void setup()
     // begin(), moving the bus to the default pins — so put it back afterwards.
     aht.begin();
     Wire.begin(I2C_SDA, I2C_SCL);
+    // 400 kHz: every device on the bus is rated for it. Set after the
+    // Wire.begin() above, which would put it back to the default.
+    Wire.setClock(400000);
     g_ahtOk = aht.isConnected();
     Serial.println(g_ahtOk ? "[aht] AHT20 present at 0x38" : "[aht] AHT20 NOT found at 0x38 — temperature/humidity off");
 
     config.begin();         // mount LittleFS and load each group from /settings/
     g_schedules.validate(); // flag bad entries before anything can fire
-    g_history.begin();      // PSRAM rolling measurements for the web graphs
+    g_history.begin();      // PSRAM 100 Hz port history, written by the profiler
     g_envHistory.begin();   // PSRAM sidebar environment history
-    profilerSetAveraging(g_monitor.config().averaging);
+    profilerSetAveraging(g_profiler.config().averaging);
 
     strip.setBrightness(g_leds.config().brightness);
     startBootSweep(g_wifi.config().ssid.length() == 0);
@@ -1489,7 +1516,7 @@ void setup()
         if (g_ports.config().power_mode[i] == "boot")
             ports[i].enable();
     }
-    profilerStart();        // background INA sampling for status and graphs
+    profilerStart();        // INA sampling into the PSRAM history, always running
 
     pinMode(EXP_INT_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(EXP_INT_PIN), onExpanderInt, FALLING);
@@ -1565,19 +1592,6 @@ void loop()
     if (scheduleChanged && localNow(tmNow))
         refreshNextInfo(weekMinute(tmNow));
     serviceSchedules();
-
-    // ---- port history: PSRAM graph tiers fed from the profiler cache ----
-    static uint32_t lastHistory = 0;
-    uint32_t historyNow = millis();
-    if (historyNow - lastHistory >= PortHistory::SAMPLE_MS)
-    {
-        lastHistory = historyNow;
-        for (uint8_t i = 0; i < NUM_PORTS; i++)
-        {
-            PortReading r = profiledPortReading(i);
-            g_history.record(i, historyNow, r.ok, r.volts, r.ma);
-        }
-    }
 
     // ---- temperature: every 2 s (the sensor needs >= 1 s between reads) ----
     // Start a measurement, then collect it 100 ms later (it takes ~80 ms).
