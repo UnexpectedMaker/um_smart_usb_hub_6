@@ -227,7 +227,8 @@ void EspHomeApi::begin(const Hooks &hooks, const char *hostname, const char *ver
 
 void EspHomeApi::start()
 {
-    _running = true;
+    if (_retryAt && millis() - _retryAt < RETRY_MS)
+        return;
     for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
     {
         _lastOn[i] = _hooks.portOn(i);
@@ -252,12 +253,15 @@ void EspHomeApi::start()
         {
             if (fd >= 0)
                 close(fd);
-            Serial.printf("[esphome] can't listen on port %u\r\n", PORT);
+            Serial.printf("[esphome] can't listen on port %u, retrying\r\n", PORT);
+            _retryAt = millis() | 1; // never 0, which means "not waiting"
             return;
         }
         fcntl(fd, F_SETFL, O_NONBLOCK);
         _listenFd = fd;
     }
+    _retryAt = 0;
+    _running = true;
 
     uint8_t m[6];
     char mac[13];

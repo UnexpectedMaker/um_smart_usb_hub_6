@@ -58,6 +58,7 @@ private:
     // the hub has to ask.
     static constexpr uint32_t PING_MS = 20000;
     static constexpr uint32_t IDLE_MS = 60000;
+    static constexpr uint32_t RETRY_MS = 5000; // between attempts to listen
 
     struct Client
     {
@@ -69,7 +70,8 @@ private:
         uint32_t lastRxMs = 0;
     };
 
-    // Listen (once) and advertise over mDNS.
+    // Listen (once) and advertise over mDNS. If the socket can't listen, stay
+    // stopped and try again RETRY_MS later.
     void start();
     // Drop every client and withdraw the mDNS service.
     void stop();
@@ -114,6 +116,7 @@ private:
     uint32_t _deviceNameHash = 0;
     uint32_t _ampsAt = 0;
     uint32_t _namesAt = 0;
+    uint32_t _retryAt = 0; // millis() of a failed listen, 0 if none
 };
 
 extern EspHomeApi g_espHomeApi;
