@@ -315,6 +315,7 @@ void EspHomeApi::acceptClient()
     slot->fd = fd;
     slot->rxLen = 0;
     slot->subscribed = false;
+    slot->pinged = false;
     slot->lastRxMs = millis();
 }
 
@@ -332,6 +333,7 @@ void EspHomeApi::receive(Client &c)
         }
         c.rxLen += n;
         c.lastRxMs = millis();
+        c.pinged = false;
 
         size_t used = 0;
         while (c.fd >= 0 && used < c.rxLen)
@@ -358,8 +360,14 @@ void EspHomeApi::receive(Client &c)
             return;
         }
     }
-    if (millis() - c.lastRxMs > IDLE_MS)
+    uint32_t quiet = millis() - c.lastRxMs;
+    if (quiet > IDLE_MS)
         drop(c);
+    else if (quiet > PING_MS && !c.pinged)
+    {
+        c.pinged = true;
+        transmit(c, PING_REQUEST, 0);
+    }
 }
 
 void EspHomeApi::transmit(Client &c, uint32_t type, size_t len)

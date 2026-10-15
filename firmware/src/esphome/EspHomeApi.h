@@ -53,7 +53,11 @@ private:
     static constexpr size_t RX_BYTES = 640;    // per client
     static constexpr uint32_t AMPS_MS = 5000;  // how often current is checked
     static constexpr uint32_t NAMES_MS = 1000; // how often the names are checked
-    static constexpr uint32_t IDLE_MS = 60000; // Home Assistant pings every 20 s
+    // A client that has sent nothing for PING_MS is pinged, and dropped after
+    // IDLE_MS. Home Assistant only pings when it hasn't heard from the hub, so
+    // the hub has to ask.
+    static constexpr uint32_t PING_MS = 20000;
+    static constexpr uint32_t IDLE_MS = 60000;
 
     struct Client
     {
@@ -61,6 +65,7 @@ private:
         uint8_t *rx = nullptr; // RX_BYTES, in PSRAM
         size_t rxLen = 0;
         bool subscribed = false;
+        bool pinged = false; // a ping is out since the last message received
         uint32_t lastRxMs = 0;
     };
 
@@ -72,7 +77,8 @@ private:
     void drop(Client &c);
     // Take a waiting connection, if any. Refused while stopped or full.
     void acceptClient();
-    // Read what a client sent and handle each complete message.
+    // Read what a client sent and handle each complete message. Ping a quiet
+    // client; drop a silent one.
     void receive(Client &c);
     // Answer one message.
     void handle(Client &c, uint32_t type, const uint8_t *p, const uint8_t *end);
