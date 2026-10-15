@@ -133,6 +133,27 @@ on any `return` out of the block:
   AHT20 read in `loop()`).
 - Recursive: a locked function can call another that also locks.
 
+## Settings
+
+The settings groups (`g_device`, `g_ports`, `g_schedules` and the rest) are
+read and written by `loop()` and by the web server's task. The web server's
+task isn't pinned to a core and runs at a higher priority than `loop()`, so it
+can interrupt `loop()` partway through a read. Replacing a `String` frees its
+old buffer, so an unlocked read from the other task can use freed memory.
+
+Every read or write of a group's values outside `setup()` holds
+`SettingsLock` (`settings/HubSettings.h`), a scope guard around a recursive
+FreeRTOS mutex, used the same way as `I2CLock`:
+
+- `loop()` holds it around each section that touches settings, not the whole
+  pass.
+- The web server holds it in each handler that reads or changes settings.
+- `fromJson()`, `save()` and the setters take it themselves.
+- Never hold it across a blocking call, such as an HTTP request.
+  The location lookup runs its request unlocked and locks only to store the
+  result.
+- If you need both locks, take `SettingsLock` first, then `I2CLock`.
+
 ## Serial output
 
 - Every line ends in CR+LF: use `Serial.println()` or end `printf` strings

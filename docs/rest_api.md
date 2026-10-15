@@ -56,6 +56,7 @@ temperature, total current draw and more.
 | Read a port's voltage, current and power history (up to 60 minutes at 100 Hz) | [`GET /api/ports/{n}/history`](#get-apiportsnhistory) |
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
+| Flash a port's LED to find it on the hub | [`POST /api/identify?n=`](#post-apiidentifyn1-6) |
 | Set each port's power mode: manual, on at boot, or on while a device is plugged in | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_mode":[...]}}` |
 | Name the ports | [`POST /api/settings`](#post-apisettings) with `{"ports":{"names":[...]}}` |
 | Change any other setting | [`POST /api/settings`](#post-apisettings) |
@@ -99,6 +100,12 @@ Bad `on` parameter on `/api/hub/ports`:
 { "error": "bad param", "detail": "on must be 0 or 1" }
 ```
 
+Missing or bad `n` on `/api/identify`:
+
+```json
+{ "error": "bad param", "detail": "n must be 1-6" }
+```
+
 Everything else is lenient: a malformed `/api/port` query, bad JSON on
 `/api/schedules`, or bad JSON on `/api/settings` all return `200` and silently
 apply nothing. See *Current limitations*.
@@ -120,6 +127,7 @@ apply nothing. See *Current limitations*.
 | `GET` | `/api/schedules` | All six ports' schedules |
 | `GET` | `/api/settings/schema` | Settings structure + current values |
 | `POST` | `/api/port?n=&on=` | Switch one port |
+| `POST` | `/api/identify?n=` | Flash one port's LED, to find it on the hub |
 | `POST` | `/api/schedules` | Replace all schedules |
 | `POST` | `/api/settings` | Update one or more settings groups |
 | `POST` | `/api/theme?value=` | Store the UI theme |
@@ -566,13 +574,15 @@ curl http://192.168.1.100/api/status
   "ui": {
     "averaging": 0,
     "mini_graphs": true,
-    "mini_metric": "ma",
+    "mini_metric": ["ma", "ma", "volts", "ma", "ma", "mw"],
     "graph_metric": "volts,ma,mw",
     "graph_window": 10,
     "graph_scale": "linear",
     "graph_voltage_zero": false,
     "graph_y_lock": false
   },
+  "reverse_order": false,
+  "time_24h": true,
   "ip": "192.168.1.100",
   "uptime_s": 838,
   "heap": 209800,
@@ -902,13 +912,16 @@ curl http://192.168.1.100/api/settings/schema
         "city": "Melbourne",
         "country": "AU",
         "utc_offset": 10,
-        "ntp_server": "pool.ntp.org"
+        "ntp_server": "pool.ntp.org",
+        "time_24h": true
       },
       "fields": [
         { "type": "string", "key": "city", "label": "City" },
         { "type": "string", "key": "country", "label": "Country" },
         { "type": "int", "key": "utc_offset", "label": "UTC offset", "min": -12, "max": 14, "step": 1 },
-        { "type": "string", "key": "ntp_server", "label": "NTP server" }
+        { "type": "string", "key": "ntp_server", "label": "NTP server" },
+        { "type": "bool", "key": "time_24h", "label": "Show time 24 hour",
+          "help": "Off shows the time as 12 hour with AM/PM" }
       ]
     },
     {
@@ -925,13 +938,16 @@ curl http://192.168.1.100/api/settings/schema
       "label": "Ports",
       "values": {
         "power_mode": ["manual", "manual", "connect", "manual", "manual", "boot"],
-        "names": ["", "", "", "", "", "Raspberry Pi"]
+        "names": ["", "", "", "", "", "Raspberry Pi"],
+        "reverse_order": false
       },
       "fields": [
         { "type": "port_bools", "key": "power_mode", "label": "Power on boot",
           "help": "Ports switched on at startup", "value": "boot" },
         { "type": "port_bools", "key": "power_mode", "label": "Auto power on connect",
-          "help": "On when a device is plugged in, off when unplugged", "value": "connect" }
+          "help": "On when a device is plugged in, off when unplugged", "value": "connect" },
+        { "type": "bool", "key": "reverse_order", "label": "Reverse port order",
+          "help": "Show the ports 1 to 6 from left to right on this page" }
       ]
     },
     {
@@ -948,7 +964,7 @@ curl http://192.168.1.100/api/settings/schema
       "label": "Profiler",
       "values": {
         "averaging": 0,
-        "mini_graphs": false, "mini_metric": "ma", "graph_metric": "volts,ma,mw",
+        "mini_graphs": false, "mini_metric": ["ma", "ma", "volts", "ma", "ma", "mw"], "graph_metric": "volts,ma,mw",
         "graph_window": 10, "graph_scale": "linear",
         "graph_voltage_zero": false, "graph_y_lock": false
       },
@@ -968,6 +984,9 @@ curl http://192.168.1.100/api/settings/schema
   share one key: a port's button is on when its entry equals that row's
   `value`. Turning a port on in one row turns the same port off in the others;
   a port on in no row is `"manual"`, shown as **M** in the group heading.
+- `profiler.mini_metric` is each port's mini graph, port 1 first: `"ma"`,
+  `"mw"` or `"volts"`. A single string sets every port, which is how 2.0.0
+  stored it.
 - `profiler.averaging` controls the INA profiler output: `0` returns the newest
   sample, while `2`, `4`, `8` or `16` returns the mean of that many newest samples.
 - The `profiler` group has no `fields`, so the Settings panel doesn't show it.
@@ -983,6 +1002,12 @@ curl http://192.168.1.100/api/settings/schema
     at startup, the port powers on straight away
 
   Setting a mode never switches a port off.
+- `location.time_24h` only changes the web UI's clock: `false` shows the time
+  as 12 hour with AM/PM. `clock.time` is always 24 hour. It's also sent as
+  `time_24h` in `/api/status`.
+- `ports.reverse_order` only changes the web UI: `true` shows the port cards
+  1 to 6 from left to right instead of 6 to 1, the order they sit on the hub.
+  It's also sent as `reverse_order` in `/api/status`.
 
   Any other value is stored as `"manual"`.
 - `min`/`max`/`step` appear only on `int` fields.
@@ -1037,6 +1062,30 @@ caller sees real device state rather than assuming success:
 `on` accepts any integer; non-zero is on, `0` is off. If `n` or `on` is missing,
 **nothing is switched** and the current status is returned unchanged with `200`.
 An `n` outside `1..6` is ignored the same way.
+
+---
+
+## POST `/api/identify?n=<1-6>`
+
+Flash one port's LED white three times (250 ms on, 250 ms off), so you can
+find that port on the hub. It overrides the port's normal LED state while it
+flashes, and still flashes when the LEDs are turned off in Settings. Sending it
+again while it's flashing starts the three flashes again. The web UI sends this
+from the find button in the top right corner of each port's card.
+
+```
+curl -X POST 'http://192.168.1.100/api/identify?n=3'
+```
+
+```json
+{ "ok": true }
+```
+
+A missing `n`, or one outside `1..6`, returns `400`:
+
+```json
+{ "error": "bad param", "detail": "n must be 1-6" }
+```
 
 ---
 
@@ -1177,7 +1226,7 @@ curl -X POST http://192.168.1.100/api/settings \
 ```bash
 curl -X POST http://192.168.1.100/api/settings \
   -H 'Content-Type: application/json' \
-  -d '{"profiler":{"mini_metric":"ma","graph_metric":"volts,ma,mw","graph_voltage_zero":false}}'
+  -d '{"profiler":{"mini_metric":["ma","ma","volts","ma","ma","mw"],"graph_metric":"volts,ma,mw","graph_voltage_zero":false}}'
 ```
 
 ```json

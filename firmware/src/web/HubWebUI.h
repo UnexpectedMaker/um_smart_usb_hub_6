@@ -38,7 +38,7 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
   </div>
   <div class="tools">
     <button id="view-history" class="tool" onclick="setViewMode('history')" title="History: clicking a port shows its graph"><i data-icon="graph"></i></button>
-    <button id="view-schedule" class="tool" onclick="setViewMode('schedule')" title="Schedule: clicking a port shows its schedule"><i data-icon="clock"></i></button>
+    <button id="view-schedule" class="tool" onclick="setViewMode('schedule')" title="Schedule: clicking a port shows its schedule"><i data-icon="calendar"></i></button>
     <button id="theme-toggle" class="tool" onclick="toggleTheme()" title="Light / dark"><i data-icon="sun"></i></button>
     <button class="tool" onclick="openSettings()" title="Settings"><i data-icon="gear"></i></button>
   </div>
@@ -207,21 +207,31 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 @media (max-width:1100px){ .sockets { grid-template-columns:repeat(3, minmax(0,1fr)); } }
 @media (max-width:520px) { .sockets { grid-template-columns:repeat(2, minmax(0,1fr)); } }
 
-.socket { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:.7rem .6rem .6rem;
+.socket { position:relative; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:.7rem .6rem .6rem;
   display:flex; flex-direction:column; align-items:center; gap:.55rem; cursor:pointer; user-select:none;
   transition:background-color .15s, border-color .15s; }
 .socket:hover { background:var(--card-hover); }
 /* Selected = its detail is open below. Same 1px border, so nothing shifts. */
 .socket.selected { border-color:var(--accent); }
 .socket.graphing { box-shadow:inset 0 0 0 1px var(--accent); }
-.sock-head { width:100%; display:flex; align-items:center; justify-content:space-between; gap:.3rem; }
-.sock-num { font-size:1.5rem; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
-.sock-name { min-width:0; width:6.5rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+.sock-head { width:100%; min-height:1.5rem; display:flex; align-items:center; justify-content:center;
+  padding:0 .9rem; }
+/* The number sits in the card's top left corner; the name is centred between
+   it and the find button. */
+.sock-num { position:absolute; top:.2rem; left:.3rem; font-size:1.1rem; font-weight:700; line-height:1;
+  font-variant-numeric:tabular-nums; }
+.sock-name { min-width:0; width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   border:0; background:transparent; padding:.05rem .1rem; color:var(--text-muted);
-  font-size:.74rem; font-weight:700; text-align:right; line-height:1.2; border-radius:4px; }
+  font-size:.74rem; font-weight:700; text-align:center; line-height:1.2; border-radius:4px; }
 .sock-name::placeholder { color:var(--text-muted); opacity:1; }
 .sock-name:hover, .sock-name:focus { color:var(--text); background:var(--surface-2); outline:none; }
 .sock-name.named { color:var(--text); }
+/* Find: flashes the port's LED so it can be spotted on the hub. Sits in the
+   card's top right corner, clear of the name. */
+.sock-find { position:absolute; top:.15rem; right:.15rem; display:flex; align-items:center; justify-content:center;
+  width:1rem; height:1rem; border:0; border-radius:4px; background:transparent; color:var(--text-muted);
+  font-size:.65rem; cursor:pointer; padding:0; }
+.sock-find:hover { color:var(--text); background:var(--surface-2); }
 .sock-state { font-size:.68rem; font-weight:600; color:var(--text-muted); text-align:center; line-height:1.2; min-height:.85rem; }
 
 /* The USB-C opening, filled with whatever that port's RGB LED is showing — it
@@ -278,6 +288,11 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .toggle-knob { position:absolute; top:3px; bottom:3px; left:3px; width:1.8rem; border-radius:3px; background:var(--text-dim); transition:left .2s, background-color .2s; }
 .port-toggle.on { background:var(--success); border-color:var(--success); }
 .port-toggle.on .toggle-knob { left:calc(100% - 1.8rem - 4px); background:#fff; }
+/* The toggle has its own hover, and the card's goes away under it, so it's
+   clear a click here switches the port rather than selecting it. */
+.port-toggle:hover { border-color:var(--text-muted); box-shadow:0 0 0 2px var(--border); }
+.port-toggle.on:hover { filter:brightness(1.12); }
+.socket:has(.port-toggle:hover) { background:var(--card); }
 .add-sched { border:1px solid var(--accent); background:transparent; color:var(--accent); border-radius:var(--radius-sm); padding:.4rem .85rem; font-weight:600; font-size:.8rem; cursor:pointer; }
 .add-sched:hover { background:var(--accent); color:var(--accent-on); }
 
@@ -435,7 +450,14 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .graph-dot.i { background:var(--success); }
 .graph-dot.p { background:var(--txt-pink); }
 .mini-graph { display:block; width:100%; height:2.4rem; border-top:1px solid var(--border-soft); padding-top:.35rem; cursor:pointer; }
-.mini-canvas { width:100%; height:100%; display:block; }
+.mini-canvas { width:100%; height:100%; display:block; border-radius:4px; transition:background-color .15s; }
+/* The mini graph has its own hover, and the card's goes away under it, so it's
+   clear a click here changes the graph's metric rather than selecting the port. */
+.mini-graph:hover .mini-canvas { background:var(--surface-2); }
+.socket:has(.mini-graph:hover) { background:var(--card); }
+/* Holding Shift over a mini graph highlights all six: a Shift-click sets them all. */
+body.shift-held .sockets:has(.mini-graph:hover) .mini-canvas { background:var(--surface-2); }
+body.shift-held .sockets:has(.mini-graph:hover) .socket { background:var(--card); }
 
 /* ---- Settings: a drawer that slides in over the page from the right. ---- */
 .drawer { position:fixed; inset:0; z-index:200; visibility:hidden; transition:visibility 0s .2s; }
@@ -522,15 +544,18 @@ const ICONS = {
   alert: 'M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm1 6a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z',
   eye: 'M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.798c.45-.677 1.367-1.931 2.637-3.022C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.825.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z',
   eyeClosed: 'M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.832.88 9.577.43 8.9a1.619 1.619 0 0 1 0-1.797c.353-.533.995-1.42 1.868-2.305L.31 3.357A.75.75 0 0 1 .143 2.31Zm1.536 5.622A.12.12 0 0 0 1.657 8c0 .021.006.045.022.068.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688a14.207 14.207 0 0 0-1.85 2.244ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 1 1-.473-1.423A6.207 6.207 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z',
-  clock: 'M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm7-3.25v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5a.75.75 0 0 1 1.5 0Z',
   graph: 'M1.75 13.5h12.5a.75.75 0 0 1 0 1.5H1.75A1.75 1.75 0 0 1 0 13.25V1.75a.75.75 0 0 1 1.5 0v11.5c0 .138.112.25.25.25Zm12.03-9.97a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L7.25 5.62 4.03 8.84a.75.75 0 0 1-1.06-1.06l3.75-3.75a.75.75 0 0 1 1.06 0L10 6.25l2.72-2.72a.75.75 0 0 1 1.06 0Z',
+  search: 'M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z',
   x: 'M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z',
+  // Phosphor Icons v2.1.1 (MIT, github.com/phosphor-icons/core), "calendar-dots"
+  // regular weight, 256px grid: Octicons' calendar has no date grid.
+  calendar: 'M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM72,48v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V80H48V48ZM208,208H48V96H208V208Zm-68-76a12,12,0,1,1-12-12A12,12,0,0,1,140,132Zm44,0a12,12,0,1,1-12-12A12,12,0,0,1,184,132ZM96,172a12,12,0,1,1-12-12A12,12,0,0,1,96,172Zm44,0a12,12,0,1,1-12-12A12,12,0,0,1,140,172Zm44,0a12,12,0,1,1-12-12A12,12,0,0,1,184,172Z',
   // Octicons has no USB symbol — this one is Phosphor Icons v2.1.1 (MIT,
   // github.com/phosphor-icons/core), "usb" regular weight, 256px grid.
   usb: 'M252.44,121.34l-48-32A8,8,0,0,0,192,96v24H72V72h33a32,32,0,1,0,0-16H72A16,16,0,0,0,56,72v48H8a8,8,0,0,0,0,16H56v48a16,16,0,0,0,16,16h32v8a16,16,0,0,0,16,16h32a16,16,0,0,0,16-16V176a16,16,0,0,0-16-16H120a16,16,0,0,0-16,16v8H72V136H192v24a8,8,0,0,0,12.44,6.66l48-32a8,8,0,0,0,0-13.32ZM136,48a16,16,0,1,1-16,16A16,16,0,0,1,136,48ZM120,176h32v32H120Zm88-30.95V111l25.58,17Z',
 };
 // Icons not drawn on Octicons' 16px grid.
-const ICON_VB = { usb: '0 0 256 256' };
+const ICON_VB = { usb: '0 0 256 256', calendar: '0 0 256 256' };
 // An icon from ICONS as inline SVG markup, sized to the surrounding text.
 const ic = (n) => '<svg class="oi" viewBox="' + (ICON_VB[n] || '0 0 16 16') + '" aria-hidden="true"><path d="' +
   ICONS[n].split('|').join('"/><path d="') + '"/></svg>';
@@ -608,7 +633,8 @@ let liveOn = false;
 let liveGen = 0;
 let liveTimer = null;
 let liveTurn = 0;
-let miniMetric = 'ma';
+// Each port's mini graph metric: 'ma', 'mw' or 'volts'.
+const miniMetrics = { 1:'ma', 2:'ma', 3:'ma', 4:'ma', 5:'ma', 6:'ma' };
 const envHistory = [];
 const ENV_WINDOW_MS = 5 * 60 * 1000;
 let lastEnv = null;
@@ -2284,6 +2310,15 @@ function togglePower(n) {
     .catch(() => { inflight.delete(n); setOffline(true); });
 }
 
+// Flash port n's LED three times so it can be found on the hub. The card's
+// slot flashes with it, as the slot mirrors the LED.
+const IDENTIFY_MS = 1500;
+const identifyAt = {};   // port -> performance.now() when its flash started
+function identifyPort(n) {
+  identifyAt[n] = performance.now();
+  fetch('/api/identify?n=' + n, { method: 'POST' }).catch(() => setOffline(true));
+}
+
 function beginPortNameEdit(el) {
   el.dataset.editing = '1';
   el.select();
@@ -2533,9 +2568,8 @@ async function saveAllSettings() {
   try {
     const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!r.ok) throw new Error('http ' + r.status);
-    await loadSettings();   // show what the hub actually stored
-    cfgMsg('Saved');
-  } catch (e) {
+    closeSettings();        // saved: close; it reloads from the hub when opened again
+  } catch (e) {             // failed: stay open with the message
     cfgMsg('Save failed', true);
   }
   btn.disabled = false;
@@ -2571,7 +2605,7 @@ function toggleTheme() {
 function saveProfilerPrefs() {
   if (!uiPrefsLoaded) return;
   const body = {
-    mini_metric: miniMetric,
+    mini_metric: [1, 2, 3, 4, 5, 6].map((n) => miniMetrics[n]),
     graph_metric: graphCfg.metric,
     graph_voltage_zero: graphCfg.vzero
   };
@@ -2582,15 +2616,34 @@ function applyUiPrefs(ui) {
   if (uiPrefsLoaded || !ui) return;
   graphCfg.metric = normalizeGraphMetric(ui.graph_metric);
   graphCfg.vzero = !!ui.graph_voltage_zero;
-  miniMetric = ['ma','mw','volts'].includes(ui.mini_metric) ? ui.mini_metric : miniMetric;
+  const mm = ui.mini_metric;
+  for (let n = 1; n <= 6; n++) {
+    const m = Array.isArray(mm) ? mm[n - 1] : mm;
+    if (['ma','mw','volts'].includes(m)) miniMetrics[n] = m;
+  }
   uiPrefsLoaded = true;
 }
-// Clicking a mini graph cycles its displayed metric: mA, mW, V.
-function cycleMiniMetric() {
+// Clicking a port's mini graph cycles that port's metric: mA, mW, V. With
+// Shift held, every port is set to the clicked port's new metric.
+function cycleMiniMetric(n, all) {
   const order = ['ma', 'mw', 'volts'];
-  miniMetric = order[(order.indexOf(miniMetric) + 1) % order.length];
-  drawMiniGraphs();
+  const next = order[(order.indexOf(miniMetrics[n]) + 1) % order.length];
+  for (let k = 1; k <= 6; k++) if (all || k === n) miniMetrics[k] = next;
+  if (all) drawMiniGraphs(); else drawMiniGraph(n);
   saveProfilerPrefs();
+}
+// Track Shift for the all-ports mini graph hover (body.shift-held).
+const setShift = (on) => document.body.classList.toggle('shift-held', on);
+document.addEventListener('keydown', (e) => { if (e.key === 'Shift') setShift(true); });
+document.addEventListener('keyup', (e) => { if (e.key === 'Shift') setShift(false); });
+window.addEventListener('blur', () => setShift(false));
+
+// The hub's "HH:MM" as shown in the panel: as is for 24 hour, or "h:MM AM"
+// for 12 hour (the Location & Time setting "Show time 24 hour").
+function fmtClock(hhmm, h24) {
+  if (h24) return hhmm;
+  const h = parseInt(hhmm, 10);
+  return ((h + 11) % 12 + 1) + hhmm.slice(2) + (h < 12 ? ' AM' : ' PM');
 }
 
 // Seconds -> "3d 4h" / "2h 15m" / "5m" / "12s".
@@ -2621,6 +2674,8 @@ function buildPorts(n) {
         '<input class="sock-name" type="text" maxlength="24" placeholder="Port" title="Rename port"' +
           ' onclick="event.stopPropagation()" onfocus="beginPortNameEdit(this)"' +
           ' onkeydown="portNameKey(this,event)" onblur="savePortName(' + i + ',this)"></div>' +
+      '<button class="sock-find" title="Find — flash this port\'s LED" onclick="event.stopPropagation(); identifyPort(' + i + ')">' +
+        ic('search') + '</button>' +
       '<div class="slot"></div>' +
       '<div class="sock-state">--</div>' +
       '<div class="port-toggle" onclick="event.stopPropagation(); togglePower(' + i + ')"><span class="toggle-knob"></span></div>' +
@@ -2628,11 +2683,22 @@ function buildPorts(n) {
         '<div class="sock-amps"><span class="mma">--</span> <small>mA</small></div>' +
         '<div class="sock-sub"><span class="mv">--</span> &middot; <span class="mmw">--</span></div>' +
       '</div>' +
-      '<div class="mini-graph" onclick="event.stopPropagation(); cycleMiniMetric()" title="Cycle mini graph metric"><canvas class="mini-canvas"></canvas></div>' +
+      '<div class="mini-graph" onclick="event.stopPropagation(); cycleMiniMetric(' + i + ', event.shiftKey)" title="Click: cycle this graph (mA, mW, V). Shift-click: set every port\'s graph"><canvas class="mini-canvas"></canvas></div>' +
       '<div class="sock-sched">--</div>';
     host.appendChild(c);
   }
   built = true;
+}
+
+// The cards are built 6..1, as on the hub. The Ports setting "Reverse port
+// order" shows them 1..6 instead; display only.
+let portsReversed = false;
+function orderPorts(rev) {
+  rev = !!rev;
+  if (rev === portsReversed) return;
+  portsReversed = rev;
+  const host = $('ports');
+  [...host.children].reverse().forEach((c) => host.appendChild(c));
 }
 
 // What each LED state means, in words, under the port number.
@@ -2644,6 +2710,7 @@ const ANIMATED = ['pulse', 'fault', 'pinkpulse'];
 // seconds of readings.
 function drawMiniGraph(n) {
   const c = document.querySelector('#port-' + n + ' .mini-canvas');
+  const miniMetric = miniMetrics[n];
   const off = !portEnabled(n);
   const h = hist[n];
   const pts = [];
@@ -2943,11 +3010,12 @@ function applyStatus(d) {
   }
   if (d.clock) {
     lastClock = d.clock;
-    $('s-time').textContent = d.clock.synced ? d.clock.time : '--:--';
+    $('s-time').textContent = d.clock.synced ? fmtClock(d.clock.time, d.time_24h !== false) : '--:--';
     $('s-date').textContent = d.clock.synced ? d.clock.date : 'Not synced';
     updateTimeCursor();
   }
   if (!built) buildPorts(d.ports.length);
+  orderPorts(d.reverse_order);
   lastPorts = d.ports;
   d.ports.forEach(updatePort);
   if (selectedPort && $('detail-title')) $('detail-title').textContent = portTitle(selectedPort);
@@ -3028,6 +3096,17 @@ function animate(t) {
   };
   ANIMATED.forEach((st) => {
     document.querySelectorAll('.st-' + st + ' .slot').forEach((s) => { s.style.background = fill[st]; });
+  });
+  // Identifying overrides the port's state, as it does on the hub.
+  Object.keys(identifyAt).forEach((n) => {
+    const s = document.querySelector('#port-' + n + ' .slot');
+    const dt = t - identifyAt[n];
+    if (dt >= IDENTIFY_MS) {
+      delete identifyAt[n];
+      if (s) s.style.background = '';
+      const p = lastPorts.find((x) => x.n === +n);
+      if (p) updatePort(p);
+    } else if (s) s.style.background = (Math.floor(dt / 250) % 2 === 0) ? lit('255,255,255', 1) : 'var(--slot-off)';
   });
   requestAnimationFrame(animate);
 }

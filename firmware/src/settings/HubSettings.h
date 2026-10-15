@@ -39,6 +39,24 @@
 #include <vector>
 #include "json.h"
 
+// ---- Settings lock -------------------------------------------------------
+// One lock for every group's values. loop() and the web server's task both
+// read and write them, and the web server's task isn't pinned to a core and
+// runs at a higher priority, so it can interrupt loop() mid-read. Replacing a
+// String frees its old buffer, so a read from the other task could use freed
+// memory. Hold this for any read or write of a group's values outside
+// setup(): loop() holds it for most of each pass, the web server for each
+// handler that touches settings, and fromJson() and save() take it
+// themselves. Recursive, so code holding it can call code that takes it.
+class SettingsLock
+{
+public:
+    SettingsLock();
+    ~SettingsLock();
+    SettingsLock(const SettingsLock &) = delete;
+    SettingsLock &operator=(const SettingsLock &) = delete;
+};
+
 // ---- Arduino String <-> JSON -------------------------------------------
 // Lets config structs use Arduino String fields directly with nlohmann's
 // NLOHMANN_DEFINE_TYPE_* macros. A value that isn't a string throws (it is
@@ -144,6 +162,7 @@ public:
     // the rest of the group. If `j` doesn't convert, nothing changes.
     void fromJson(const nlohmann::json &j) override
     {
+        SettingsLock lock;
         nlohmann::json merged = _config;
         if (j.is_object())
             merged.update(j);
@@ -261,8 +280,9 @@ struct HubLocationConfig
     String country;      // ISO 3166-1 alpha-2, e.g. "AU"
     int utc_offset = 0;  // whole hours east of UTC, -12..+14
     String ntp_server = "pool.ntp.org";
+    bool time_24h = true; // the web UI's clock: 24 hour, or 12 hour with AM/PM
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubLocationConfig, city, country, utc_offset, ntp_server);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubLocationConfig, city, country, utc_offset, ntp_server, time_24h);
 
 class LocationSettings : public HubSettingsT<HubLocationConfig>
 {
@@ -324,8 +344,11 @@ struct HubPortsConfig
     //   "connect"  powered on when a device is plugged in, off when unplugged
     std::array<String, HUB_NUM_PORTS> power_mode{{"manual", "manual", "manual", "manual", "manual", "manual"}};
     std::array<String, HUB_NUM_PORTS> names; // "" = unnamed
+    // The web UI shows the ports 1-6 left to right instead of 6-1, the order
+    // they sit on the hub. Display only.
+    bool reverse_order = false;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_mode, names);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubPortsConfig, power_mode, names, reverse_order);
 
 class PortsSettings : public HubSettingsT<HubPortsConfig>
 {
@@ -399,7 +422,8 @@ extern WebsiteSettings g_website;
 struct HubProfilerConfig
 {
     uint8_t averaging = 0;         // newest sample only, or average newest 2 | 4 | 8 | 16
-    String mini_metric = "ma";     // "ma" | "mw" | "volts"
+    // Each port's mini graph: "ma" | "mw" | "volts".
+    std::array<String, HUB_NUM_PORTS> mini_metric{{"ma", "ma", "ma", "ma", "ma", "ma"}};
     String graph_metric = "volts,ma,mw"; // comma-separated subset of "volts", "ma", "mw"
     bool graph_voltage_zero = false;
 
@@ -425,7 +449,8 @@ public:
     std::vector<HubSettingField> uiSchema() override;
 
     // Loads as usual, then puts any unsupported value back to its default:
-    // averaging not 0, 2, 4, 8 or 16; unknown metrics, window or scale.
+    // averaging not 0, 2, 4, 8 or 16; unknown metrics, window or scale. A
+    // single mini_metric, as saved by 2.0.0, is used for every port.
     void fromJson(const nlohmann::json &j) override;
     // Applies the averaging to the running profiler.
     void onConfigChanged() override;

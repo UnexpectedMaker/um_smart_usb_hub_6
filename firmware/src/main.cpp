@@ -50,7 +50,7 @@
 #include "history/PortHistory.h"
 
 // Firmware version, reported by the web UI, the API and 'info'.
-#define HUB_FW_VERSION "2.0.0"
+#define HUB_FW_VERSION "2.1.0"
 
 #define NUM_PORTS HUB_NUM_PORTS
 
@@ -518,9 +518,29 @@ static float pulseLevel(uint32_t now)
     return 0.1f + 0.9f * f;
 }
 
+// Identify: flash a port's LED white so it can be found on the hub. Started
+// from the web UI's find button; overrides the port's state while it runs.
+#define IDENTIFY_MS 1500 // three flashes
+static volatile uint32_t g_identifyAt[NUM_PORTS] = {}; // millis() when it started; 0 = not running. Set from the web task.
+
+void identifyPort(uint8_t i)
+{
+    if (i < NUM_PORTS)
+        g_identifyAt[i] = millis() | 1; // never 0, which means "not running"
+}
+
+// True while port i is identifying; ends it once IDENTIFY_MS has passed.
+static bool identifying(uint8_t i, uint32_t now)
+{
+    if (g_identifyAt[i] && now - g_identifyAt[i] >= IDENTIFY_MS)
+        g_identifyAt[i] = 0;
+    return g_identifyAt[i] != 0;
+}
+
 // Draw every port's LED from its live state. Runs every frame because the
 // pulse and flash effects are time based.
 //
+//   identifying                   three white flashes (250 ms on / off)
 //   powered, over-current         flashing red (250 ms on / off)
 //   powered, no main 5V, device   solid pink
 //   powered, no main 5V, empty    pulsing pink
@@ -530,10 +550,15 @@ static float pulseLevel(uint32_t now)
 //   unpowered, empty              off
 void renderLeds()
 {
-    // LEDs switched off in settings: blank once, then leave them alone.
+    // LEDs switched off in settings: blank once, then leave them alone. A port
+    // being identified still flashes.
     static bool wasCleared = false;
     static int lastBrightness = -1;
-    if (!g_leds.config().enabled)
+    uint32_t now = millis();
+    bool anyIdentify = false;
+    for (uint8_t i = 0; i < NUM_PORTS; i++)
+        anyIdentify |= identifying(i, now);
+    if (!g_leds.config().enabled && !anyIdentify)
     {
         if (!wasCleared)
         {
@@ -550,12 +575,18 @@ void renderLeds()
         strip.setBrightness((uint8_t)lastBrightness);
     }
 
-    uint32_t now = millis();
     for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
         USBPort &port = ports[i];
         uint8_t r = 0, g = 0, b = 0;
-        if (port.isEnabled())
+        if (identifying(i, now))
+        {
+            if (((now - g_identifyAt[i]) / 250) % 2 == 0) // starts lit
+                r = g = b = 255;
+        }
+        else if (!g_leds.config().enabled)
+            ; // LEDs off: only the identifying port lights
+        else if (port.isEnabled())
         {
             if (port.hasFault())
             {
@@ -937,6 +968,8 @@ String buildStatusJson()
     j += ",\"rst\":\"" + String(resetReasonStr(esp_reset_reason())) + "\"";
     j += ",\"theme\":\"" + g_website.config().theme + "\"";
     j += ",\"ui\":" + g_profiler.uiPrefsJson();
+    j += ",\"reverse_order\":" + String(jb(g_ports.config().reverse_order));
+    j += ",\"time_24h\":" + String(jb(g_location.config().time_24h));
     j += ",\"ip\":\"" + (up ? WiFi.localIP().toString() : String()) + "\"";
     j += ",\"uptime_s\":" + String(millis() / 1000);
     j += ",\"heap\":" + String((uint32_t)ESP.getFreeHeap());
@@ -1208,7 +1241,8 @@ void startNetServices()
                        [](bool on) {
                            for (auto &p : ports)
                                p.setEnabled(on);
-                       }});
+                       },
+                       [](int n) { identifyPort(n - 1); }});
     webServer.begin(
         buildStatusJson,
         [](const String &t) {
@@ -1620,21 +1654,32 @@ void setup()
     Serial.println("[boot] setup done");
 }
 
+// Each section that reads or writes settings holds SettingsLock, as the web
+// server's task changes them too. The rest (OTA, expander, sensor, button)
+// runs without it, so the web server isn't kept waiting.
 void loop()
 {
-    processSerial();
+    {
+        SettingsLock lock;
+        processSerial();
+    }
     ArduinoOTA.handle();
 
     // ---- network ----
-    if (g_gotIP)
     {
-        g_gotIP = false;
-        startNetServices();
+        SettingsLock lock;
+        if (g_gotIP)
+        {
+            g_gotIP = false;
+            startNetServices();
+        }
+        if (g_wifi.consumeChanged()) // WiFi settings edited — reconnect with them
+            connectWiFi();
+        serviceWiFi();
+        // Its callbacks read the device and port names. Its sockets are
+        // non-blocking, so it never waits while holding the lock.
+        g_espHomeApi.loop();
     }
-    if (g_wifi.consumeChanged()) // WiFi settings edited — reconnect with them
-        connectWiFi();
-    serviceWiFi();
-    g_espHomeApi.loop();
 
     // ---- port hardware ----
     if (g_expanderIrq)
@@ -1644,35 +1689,43 @@ void loop()
     }
     // A plug or unplug on a port in "connect" power mode switches its power to
     // match.
-    for (uint8_t i = 0; i < NUM_PORTS; i++)
     {
-        USBPort &port = ports[i];
-        if (port.senseDirty() && port.serviceSense() && g_ports.config().power_mode[i] == "connect")
+        SettingsLock lock;
+        for (uint8_t i = 0; i < NUM_PORTS; i++)
         {
-            port.setEnabled(port.isOccupied());
-            Serial.printf("[port] %u device %s — auto power %s\r\n", i + 1,
-                          port.isOccupied() ? "connected" : "removed", port.isOccupied() ? "on" : "off");
+            USBPort &port = ports[i];
+            if (port.senseDirty() && port.serviceSense() && g_ports.config().power_mode[i] == "connect")
+            {
+                port.setEnabled(port.isOccupied());
+                Serial.printf("[port] %u device %s — auto power %s\r\n", i + 1,
+                              port.isOccupied() ? "connected" : "removed", port.isOccupied() ? "on" : "off");
+            }
         }
     }
 
     // ---- settings groups (location lookup) and scheduler ----
+    // Without the lock: the location lookup blocks on an HTTP request, and
+    // each group takes the lock itself where it touches its values.
     HubRegistry::dispatchLoop();
 
-    bool scheduleChanged = (g_schedules.version() != g_evCacheVer);
-    refreshEventCache();
-    // As soon as the clock is valid, put ports where their schedules say they
-    // should be — covers changes missed while the hub was off.
-    static bool reconciled = false;
-    if (!reconciled && timeSynced())
     {
-        reconciled = true;
-        reconcileSchedules();
-        scheduleChanged = true;
+        SettingsLock lock;
+        bool scheduleChanged = (g_schedules.version() != g_evCacheVer);
+        refreshEventCache();
+        // As soon as the clock is valid, put ports where their schedules say
+        // they should be — covers changes missed while the hub was off.
+        static bool reconciled = false;
+        if (!reconciled && timeSynced())
+        {
+            reconciled = true;
+            reconcileSchedules();
+            scheduleChanged = true;
+        }
+        struct tm tmNow;
+        if (scheduleChanged && localNow(tmNow))
+            refreshNextInfo(weekMinute(tmNow));
+        serviceSchedules();
     }
-    struct tm tmNow;
-    if (scheduleChanged && localNow(tmNow))
-        refreshNextInfo(weekMinute(tmNow));
-    serviceSchedules();
 
     // ---- temperature: every 2 s (the sensor needs >= 1 s between reads) ----
     // Start a measurement, then collect it 100 ms later (it takes ~80 ms).
@@ -1718,6 +1771,7 @@ void loop()
     if (now - lastFrame >= 20)
     {
         lastFrame = now;
+        SettingsLock lock;
         if (!renderBootSweep())
             renderLeds();
     }

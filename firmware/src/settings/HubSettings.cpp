@@ -14,12 +14,27 @@
 #include <HTTPClient.h>
 #include <string.h>
 #include <time.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 static const char *SETTINGS_DIR = "/settings";           // one <group>.json per group
 static const char *OLD_SETTINGS_FILE = "/settings.json"; // firmware 1.0.0: all groups in one file
 
 extern bool profilerSetAveraging(int samples);
 extern void applyPowerModes();
+
+// ---- SettingsLock --------------------------------------------------------
+
+// Created on first use, so it exists before any global's constructor needs it.
+static SemaphoreHandle_t settingsMutex()
+{
+    static StaticSemaphore_t buf;
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutexStatic(&buf);
+    return m;
+}
+
+SettingsLock::SettingsLock() { xSemaphoreTakeRecursive(settingsMutex(), portMAX_DELAY); }
+SettingsLock::~SettingsLock() { xSemaphoreGiveRecursive(settingsMutex()); }
 
 // ---- HubRegistry ---------------------------------------------------------
 
@@ -69,7 +84,11 @@ void HubRegistry::dispatchConfigChanged(const char *name)
 
 // ---- HubConfig -----------------------------------------------------------
 
-bool HubSettings::save() { return _cfg && _cfg->save(*this); }
+bool HubSettings::save()
+{
+    SettingsLock lock;
+    return _cfg && _cfg->save(*this);
+}
 
 // Where a group lives: /settings/<name>.json
 static String groupPath(const HubSettings &m) { return String(SETTINGS_DIR) + "/" + m.name() + ".json"; }
@@ -261,6 +280,7 @@ std::vector<HubSettingField> WiFiSettings::uiSchema()
 
 void WiFiSettings::fromJson(const nlohmann::json &j)
 {
+    SettingsLock lock;
     HubWiFiConfig before = _config;
     HubSettingsT<HubWiFiConfig>::fromJson(j);
     _changed = _changed || before.ssid != _config.ssid || before.password != _config.password ||
@@ -270,6 +290,7 @@ void WiFiSettings::fromJson(const nlohmann::json &j)
 
 void WiFiSettings::setCredentials(const String &ssid, const String &password)
 {
+    SettingsLock lock;
     _config.ssid = ssid;
     _config.password = password;
     save(); // writes only the wifi group
@@ -286,6 +307,8 @@ std::vector<HubSettingField> LocationSettings::uiSchema()
         {.type = F::T::String, .key = "country", .label = "Country"},
         {.type = F::T::Int, .key = "utc_offset", .label = "UTC offset", .min = -12, .max = 14, .step = 1},
         {.type = F::T::String, .key = "ntp_server", .label = "NTP server"},
+        {.type = F::T::Bool, .key = "time_24h", .label = "Show time 24 hour",
+         .help = "Off shows the time as 12 hour with AM/PM"},
     };
 }
 
@@ -339,6 +362,7 @@ void LocationSettings::doIPGeo()
             nlohmann::json j = nlohmann::json::parse(http.getString().c_str());
             if (j.value("status", std::string()) == "success")
             {
+                SettingsLock lock; // the lookup itself ran without it
                 // `offset` is seconds east of UTC, including DST at lookup time.
                 _config.utc_offset = j.value("offset", 0) / 3600;
                 std::string city = j.value("city", std::string());
@@ -384,6 +408,8 @@ std::vector<HubSettingField> PortsSettings::uiSchema()
          .help = "Ports switched on at startup", .value = "boot"},
         {.type = F::T::PortBools, .key = "power_mode", .label = "Auto power on connect",
          .help = "On when a device is plugged in, off when unplugged", .value = "connect"},
+        {.type = F::T::Bool, .key = "reverse_order", .label = "Reverse port order",
+         .help = "Show the ports 1 to 6 from left to right on this page"},
     };
 }
 
@@ -412,6 +438,7 @@ static String cleanPortName(const String &in)
 
 void PortsSettings::fromJson(const nlohmann::json &j)
 {
+    SettingsLock lock;
     HubSettingsT<HubPortsConfig>::fromJson(j);
 
     // Settings saved by 1.1.0 have power_on_boot instead of power_mode.
@@ -465,6 +492,7 @@ static bool oneOf(const String &value, std::initializer_list<const char *> allow
 // Apply partial website settings through the normal macro loader, then validate.
 void WebsiteSettings::fromJson(const nlohmann::json &j)
 {
+    SettingsLock lock;
     HubSettingsT<HubWebsiteConfig>::fromJson(j);
     if (!oneOf(_config.theme, {"dark", "light"}))
         _config.theme = "dark";
@@ -473,6 +501,7 @@ void WebsiteSettings::fromJson(const nlohmann::json &j)
 // Store the light/dark theme selected by the UI.
 void WebsiteSettings::setTheme(const String &theme)
 {
+    SettingsLock lock;
     if (theme == "dark" || theme == "light")
         _config.theme = theme;
 }
@@ -496,8 +525,9 @@ static void sanitizeProfiler(HubProfilerConfig &c)
 {
     if (c.averaging != 0 && c.averaging != 2 && c.averaging != 4 && c.averaging != 8 && c.averaging != 16)
         c.averaging = 0;
-    if (!oneOf(c.mini_metric, {"ma", "mw", "volts"}))
-        c.mini_metric = "ma";
+    for (auto &m : c.mini_metric)
+        if (!oneOf(m, {"ma", "mw", "volts"}))
+            m = "ma";
     c.graph_metric.replace(" ", "");
     if (c.graph_metric == "combined")
         c.graph_metric = "volts,ma,mw";
@@ -528,7 +558,22 @@ static void sanitizeProfiler(HubProfilerConfig &c)
 // Apply partial profiler settings through the normal macro loader, then validate.
 void ProfilerSettings::fromJson(const nlohmann::json &j)
 {
-    HubSettingsT<HubProfilerConfig>::fromJson(j);
+    SettingsLock lock;
+    // mini_metric is one value per port. 2.0.0 saved a single value for every
+    // port; a short or long array is padded with "ma" or cut to six.
+    nlohmann::json in = j;
+    if (in.is_object() && in.contains("mini_metric"))
+    {
+        const nlohmann::json &m = in["mini_metric"];
+        nlohmann::json six = nlohmann::json::array();
+        for (size_t i = 0; i < HUB_NUM_PORTS; i++)
+        {
+            const nlohmann::json &v = m.is_array() ? (i < m.size() ? m[i] : nlohmann::json()) : m;
+            six.push_back(v.is_string() ? v.get<std::string>() : std::string("ma"));
+        }
+        in["mini_metric"] = six;
+    }
+    HubSettingsT<HubProfilerConfig>::fromJson(in);
     sanitizeProfiler(_config);
 }
 
@@ -561,7 +606,10 @@ void ProfilerSettings::loop()
 String ProfilerSettings::uiPrefsJson() const
 {
     String j = "{\"averaging\":" + String(_config.averaging);
-    j += ",\"mini_metric\":\"" + _config.mini_metric + "\"";
+    j += ",\"mini_metric\":[";
+    for (size_t i = 0; i < HUB_NUM_PORTS; i++)
+        j += String(i ? "," : "") + "\"" + _config.mini_metric[i] + "\"";
+    j += "]";
     j += ",\"graph_metric\":\"" + _config.graph_metric + "\"";
     j += ",\"graph_voltage_zero\":";
     j += _config.graph_voltage_zero ? "true" : "false";
@@ -622,6 +670,7 @@ int hubEntryWindow(const HubScheduleEntry &e)
 
 bool SchedulesSettings::setFromJson(const String &body)
 {
+    SettingsLock lock;
     try
     {
         fromJson(nlohmann::json::parse(body.c_str()));
@@ -771,6 +820,7 @@ void SchedulesSettings::disableEntry(uint8_t port, int index)
 
 String SchedulesSettings::toJsonString()
 {
+    SettingsLock lock;
     // Built by hand so the transient `invalid` flag is included — it is
     // deliberately not part of the stored schema.
     String s = "{\"ports\":[";

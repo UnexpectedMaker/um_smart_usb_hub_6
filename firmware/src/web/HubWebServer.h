@@ -34,6 +34,7 @@ public:
         std::function<String(int)> port;            // GET /api/ports/{n}
         std::function<String(int)> portSchedule;    // GET /api/ports/{n}/schedule
         std::function<void(bool)> setAllPorts;      // POST /api/hub/ports?on=
+        std::function<void(int)> identifyPort;      // POST /api/identify?n= (port 1..6)
     };
 
     // Provide the REST suppliers. Must be called before begin().

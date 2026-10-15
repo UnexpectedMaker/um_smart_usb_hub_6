@@ -165,11 +165,13 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
 
     // Everything the page shows, polled once a second.
     server.on("/api/status", HTTP_GET, [statusFn](AsyncWebServerRequest *req) {
+        SettingsLock lock;
         req->send(200, "application/json", statusFn());
     });
 
     // POST /api/theme?value=dark|light — store the UI theme.
     server.on("/api/theme", HTTP_POST, [themeFn](AsyncWebServerRequest *req) {
+        SettingsLock lock;
         if (req->hasParam("value"))
             themeFn(req->getParam("value")->value());
         req->send(200, "application/json", "{\"ok\":true}");
@@ -178,9 +180,23 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     // POST /api/port?n=1..6&on=0|1 — switch one port. Replies with the status
     // read back afterwards, so the page shows what really happened.
     server.on("/api/port", HTTP_POST, [portFn, statusFn](AsyncWebServerRequest *req) {
+        SettingsLock lock;
         if (req->hasParam("n") && req->hasParam("on"))
             portFn(req->getParam("n")->value().toInt(), req->getParam("on")->value().toInt() != 0);
         req->send(200, "application/json", statusFn());
+    });
+
+    // POST /api/identify?n=1..6 — flash the port's LED so it can be found.
+    // Not under /api/port: routes match as prefixes, so /api/port would take it.
+    server.on("/api/identify", HTTP_POST, [this](AsyncWebServerRequest *req) {
+        int n = req->hasParam("n") ? req->getParam("n")->value().toInt() : 0;
+        if (n < 1 || n > 6)
+        {
+            req->send(400, "application/json", "{\"error\":\"bad param\",\"detail\":\"n must be 1-6\"}");
+            return;
+        }
+        _rest.identifyPort(n);
+        req->send(200, "application/json", "{\"ok\":true}");
     });
 
     // GET /api/history?port=1..6 — one page of a port's PSRAM history, in
@@ -281,6 +297,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     // group; POST {"group":{...},...} to update those groups. Each group sent
     // is saved to its own file; groups not sent aren't touched.
     server.on("/api/settings/schema", HTTP_GET, [](AsyncWebServerRequest *req) {
+        SettingsLock lock;
         nlohmann::json groups = nlohmann::json::array();
         for (auto *m : HubRegistry::all())
             if (m->show_on_website())
@@ -297,6 +314,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
             String body;
             if (!collectBody(req, data, len, index, total, body))
                 return;
+            SettingsLock lock;
             try
             {
                 nlohmann::json j = nlohmann::json::parse(body.c_str());
@@ -385,16 +403,19 @@ void HubWebServer::registerRest()
             req->send(res);
         });
         server.on(sched.c_str(), HTTP_GET, [this, n, sched](AsyncWebServerRequest *req) {
+            SettingsLock lock;
             if (exactPath(req, sched))
                 req->send(200, "application/json", _rest.portSchedule(n));
         });
         server.on(base.c_str(), HTTP_GET, [this, n, base](AsyncWebServerRequest *req) {
+            SettingsLock lock;
             if (exactPath(req, base))
                 req->send(200, "application/json", _rest.port(n));
         });
     }
 
     server.on("/api/ports", HTTP_GET, [this](AsyncWebServerRequest *req) {
+        SettingsLock lock;
         if (exactPath(req, "/api/ports"))
             req->send(200, "application/json", _rest.ports());
     });
@@ -404,6 +425,7 @@ void HubWebServer::registerRest()
     server.on("/api/hub/ports", HTTP_POST, [this](AsyncWebServerRequest *req) {
         if (!exactPath(req, "/api/hub/ports"))
             return;
+        SettingsLock lock;
         String v = req->hasParam("on") ? req->getParam("on")->value() : String();
         v.toLowerCase();
         bool on = (v == "1" || v == "true" || v == "on");
@@ -418,6 +440,7 @@ void HubWebServer::registerRest()
     });
 
     server.on("/api/hub", HTTP_GET, [this](AsyncWebServerRequest *req) {
+        SettingsLock lock;
         if (exactPath(req, "/api/hub"))
             req->send(200, "application/json", _rest.hub());
     });

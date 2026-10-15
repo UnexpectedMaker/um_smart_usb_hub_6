@@ -160,6 +160,7 @@ time zone, and adjust the LEDs — no serial console needed.
 | flashing red | over-current fault |
 | solid pink | power on but no 5V supply, device plugged in |
 | pulsing pink | power on but no 5V supply, nothing plugged in |
+| three white flashes | the port's find button was pressed on the web page |
 
 ### Button
 
@@ -168,6 +169,8 @@ Each press flips every port to the opposite state.
 ### Web page
 
 - Turn each port on or off, and see its live voltage, current and power
+- Find a port: the magnifier in the top right of its card flashes that port's
+  LED three times
 - Weekly schedules per port: switch off, switch on, on for a duration, on
   until a time, or on for a short burst at a regular interval. A timeline shows
   the week, and entries that clash are flagged.

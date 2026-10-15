@@ -6,7 +6,7 @@ decisions behind the implementation.
 
 ## What changed
 
-**Top bar.** Two buttons, a graph and a clock, pick what clicking a port shows:
+**Top bar.** Two buttons, a graph and a calendar, pick what clicking a port shows:
 its history graph or its schedule. Selecting one deselects the other.
 
 **The graph** (one port at a time):
@@ -70,8 +70,10 @@ its history graph or its schedule. Selecting one deselects the other.
 legend shows the lowest, highest and average of each metric in view.
 
 **Mini graphs.** Every port card shows a mini graph of its newest 10 seconds,
-whichever view is selected; clicking it cycles mA, mW and V. The line stays
-below the labels, and each scale's top is at least 10 mA, 50 mW or 1 V.
+whichever view is selected; clicking it cycles that port's graph through mA,
+mW and V. Shift-click sets every port's graph to the clicked port's new
+metric, and with Shift held, hovering any mini graph highlights all six. The line stays below the labels, and each scale's top is at least
+10 mA, 50 mW or 1 V.
 
 **Also:** the sidebar environment panel has temperature and humidity trends.
 The graph preferences and averaging are stored in the `profiler` settings
@@ -153,7 +155,8 @@ None of the `profiler` group is shown in the Settings panel. All of it is set
 by the graph's controls:
 
 - `averaging`: `0`, `2`, `4`, `8` or `16`, from the averaging buttons
-- `mini_metric`
+- `mini_metric`: each port's mini graph, `"ma"`, `"mw"` or `"volts"`, one per
+  port, from clicking that port's mini graph
 - `graph_metric`
 - `graph_voltage_zero`
 
