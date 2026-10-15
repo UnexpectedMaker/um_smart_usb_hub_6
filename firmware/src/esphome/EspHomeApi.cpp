@@ -19,6 +19,7 @@
 #define API_NUM_PORTS 6
 #define API_RX_MAX 512
 #define API_AMPS_MS 5000
+#define API_NAMES_MS 1000
 #define API_ESPHOME_VERSION "2025.10.0" // the ESPHome release this API matches
 
 EspHomeApi espHomeApi;
@@ -107,7 +108,9 @@ static Conn conns[API_CLIENTS];
 static bool lastOn[API_NUM_PORTS];
 static bool lastConnected[API_NUM_PORTS];
 static float lastAmps[API_NUM_PORTS];
+static String lastNames[API_NUM_PORTS];
 static uint32_t lastAmpsMs = 0;
+static uint32_t lastNamesMs = 0;
 static bool running = false;
 
 // Decode a varint; false if it runs past end.
@@ -193,6 +196,12 @@ static void parseSwitchCommand(const uint8_t *p, const uint8_t *end, uint32_t &k
     }
 }
 
+// Port i's name, or "Port n" if it has none.
+static String portLabel(int i)
+{
+    return lastNames[i].length() ? lastNames[i] : String("Port ") + String(i + 1);
+}
+
 // Round to the precision Home Assistant shows, so noise doesn't count as a change.
 static float roundAmps(float a) { return roundf(a * 1000.0f) / 1000.0f; }
 
@@ -216,6 +225,7 @@ static void start()
     {
         lastOn[i] = hooks.portOn(i);
         lastConnected[i] = hooks.portConnected(i);
+        lastNames[i] = hooks.portName(i);
     }
 
     if (!server)
@@ -290,24 +300,25 @@ static void handle(Conn &c, uint32_t type, const uint8_t *p, const uint8_t *end)
         for (int i = 0; i < API_NUM_PORTS; i++)
         {
             String n(i + 1);
+            String label = portLabel(i);
             Pb sw;
             sw.str(1, String("port_") + n);
             sw.fixed32(2, switchKey(i));
-            sw.str(3, String("Port ") + n);
+            sw.str(3, label);
             sw.str(9, "outlet");
             send(c, LIST_SWITCH_RESPONSE, sw);
 
             Pb connected;
             connected.str(1, String("port_") + n + "_connected");
             connected.fixed32(2, connectedKey(i));
-            connected.str(3, String("Port ") + n + " connected");
+            connected.str(3, label + " connected");
             connected.str(5, "plug");
             send(c, LIST_BINARY_SENSOR_RESPONSE, connected);
 
             Pb amps;
             amps.str(1, String("port_") + n + "_current");
             amps.fixed32(2, ampsKey(i));
-            amps.str(3, String("Port ") + n + " current");
+            amps.str(3, label + " current");
             amps.str(6, "A");
             amps.u32(7, 3);
             amps.str(9, "current");
@@ -423,6 +434,26 @@ void EspHomeApi::loop()
         }
         lastOn[i] = on;
         lastConnected[i] = connected;
+    }
+
+    // Clients only read names when they connect, so drop them after a rename
+    // and let them reconnect.
+    if (millis() - lastNamesMs >= API_NAMES_MS)
+    {
+        lastNamesMs = millis();
+        bool renamed = false;
+        for (int i = 0; i < API_NUM_PORTS; i++)
+        {
+            String name = hooks.portName(i);
+            if (name != lastNames[i])
+            {
+                lastNames[i] = name;
+                renamed = true;
+            }
+        }
+        if (renamed)
+            for (auto &c : conns)
+                c.client.stop();
     }
 
     if (millis() - lastAmpsMs < API_AMPS_MS)

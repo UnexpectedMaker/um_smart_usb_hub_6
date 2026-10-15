@@ -24,6 +24,7 @@ public:
         std::function<bool()> enabled; // the API runs only while this is true
         std::function<bool(int)> portOn;
         std::function<bool(int)> portConnected;
+        std::function<String(int)> portName; // "" if unnamed
         std::function<void(int, bool)> setPort;
         std::function<bool(int, float &)> portAmps; // false if the port has no monitor
     };

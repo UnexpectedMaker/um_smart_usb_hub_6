@@ -1232,6 +1232,7 @@ void startNetServices()
     espHomeApi.begin({[]() { return g_esphome.config().enabled; },
                       [](int i) { return ports[i].isEnabled(); },
                       [](int i) { return ports[i].isOccupied(); },
+                      [](int i) { return g_ports.config().names[i]; },
                       [](int i, bool on) { ports[i].setEnabled(on); },
                       [](int i, float &amps) {
                           PortReading r = profiledPortReading(i);
