@@ -94,10 +94,16 @@ private:
     // Write the header in front of the len-byte message at message() and send
     // the frame. Drops the client if it didn't fit or the socket can't take it.
     void transmit(Client &c, uint32_t type, size_t len);
+    // Name, MAC, versions and the friendly name.
     void sendDeviceInfo(Client &c);
+    // Each port's switch, connected sensor and current sensor, then the end
+    // of the list.
     void sendEntities(Client &c);
+    // Port power state.
     void sendSwitch(Client &c, uint8_t port, bool on);
+    // Whether a device is plugged in.
     void sendConnected(Client &c, uint8_t port, bool connected);
+    // Port current in amps; marked missing when the port has no monitor.
     void sendAmps(Client &c, uint8_t port, bool ok, float amps);
 
     Hooks _hooks = {};

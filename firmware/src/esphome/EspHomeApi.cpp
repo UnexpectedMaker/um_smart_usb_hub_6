@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdarg.h>
 
 #define API_ESPHOME_VERSION "2025.10.0" // the ESPHome release this API matches
 
@@ -182,12 +183,24 @@ uint32_t nameHash(const char *s)
     return h;
 }
 
-// Port i's name, or "Port n" if it has none. Returns its length.
-int portLabel(const char *name, uint8_t i, char *out, size_t len)
+// snprintf, returning the length actually written rather than the length it
+// would have written.
+__attribute__((format(printf, 3, 4))) size_t format(char *out, size_t len, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(out, len, fmt, args);
+    va_end(args);
+    return n < 0 ? 0 : min((size_t)n, len - 1);
+}
+
+// Port i's name, or "Port n" if it has none.
+void portLabel(const char *name, uint8_t i, char *out, size_t len)
 {
     if (*name)
-        return snprintf(out, len, "%s", name);
-    return snprintf(out, len, "Port %u", i + 1);
+        format(out, len, "%s", name);
+    else
+        format(out, len, "Port %u", i + 1);
 }
 
 // Round to the precision Home Assistant shows, so noise doesn't count as a change.
@@ -425,23 +438,23 @@ void EspHomeApi::sendEntities(Client &c)
         portLabel(_hooks.portName(i), i, label, sizeof(label));
 
         Proto sw(message(), MESSAGE_BYTES);
-        sw.str(1, text, snprintf(text, sizeof(text), "port_%u", i + 1));
+        sw.str(1, text, format(text, sizeof(text), "port_%u", i + 1));
         sw.fixed32(2, switchKey(i));
         sw.str(3, label);
         sw.str(9, "outlet");
         transmit(c, LIST_SWITCH_RESPONSE, sw.len);
 
         Proto con(message(), MESSAGE_BYTES);
-        con.str(1, text, snprintf(text, sizeof(text), "port_%u_connected", i + 1));
+        con.str(1, text, format(text, sizeof(text), "port_%u_connected", i + 1));
         con.fixed32(2, connectedKey(i));
-        con.str(3, text, snprintf(text, sizeof(text), "%s connected", label));
+        con.str(3, text, format(text, sizeof(text), "%s connected", label));
         con.str(5, "plug");
         transmit(c, LIST_BINARY_SENSOR_RESPONSE, con.len);
 
         Proto amps(message(), MESSAGE_BYTES);
-        amps.str(1, text, snprintf(text, sizeof(text), "port_%u_current", i + 1));
+        amps.str(1, text, format(text, sizeof(text), "port_%u_current", i + 1));
         amps.fixed32(2, ampsKey(i));
-        amps.str(3, text, snprintf(text, sizeof(text), "%s current", label));
+        amps.str(3, text, format(text, sizeof(text), "%s current", label));
         amps.str(6, "A");
         amps.u32(7, 3);
         amps.str(9, "current");
@@ -467,7 +480,6 @@ void EspHomeApi::sendConnected(Client &c, uint8_t port, bool connected)
     transmit(c, BINARY_SENSOR_STATE_RESPONSE, p.len);
 }
 
-// missing_state is set when the port has no monitor.
 void EspHomeApi::sendAmps(Client &c, uint8_t port, bool ok, float amps)
 {
     Proto p(message(), MESSAGE_BYTES);
@@ -487,7 +499,7 @@ void EspHomeApi::handle(Client &c, uint32_t type, const uint8_t *p, const uint8_
         Proto m(message(), MESSAGE_BYTES);
         m.u32(1, 1); // API 1.12, as ESPHome 2025.10.0 reports
         m.u32(2, 12);
-        m.str(3, info, snprintf(info, sizeof(info), "Smart USB Hub %s", _version));
+        m.str(3, info, format(info, sizeof(info), "Smart USB Hub %s", _version));
         m.str(4, _hostname, fitUtf8(_hostname, 31));
         transmit(c, HELLO_RESPONSE, m.len);
         break;
