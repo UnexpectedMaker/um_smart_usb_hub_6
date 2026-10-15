@@ -8,22 +8,26 @@
 // EspHomeApi.cpp — the minimal part of the ESPHome native API that Home
 // Assistant needs: handshake, device info, entity list, states, ping and
 // switch commands. Message ids and fields follow esphome/components/api/api.proto.
-#include "EspHomeApi.h"
+//
+// Messages are protobuf, encoded by hand straight into the PSRAM frame buffer.
+// Each is built after the first HEADER_BYTES, and its frame header (0x00,
+// length, type) is written just in front of it once the length is known.
+#include "esphome/EspHomeApi.h"
 #include <WiFi.h>
-#include <ESPmDNS.h>
+#include <esp_heap_caps.h>
 #include <mdns.h>
-#include <vector>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
-#define API_PORT 6053
-#define API_CLIENTS 2
-#define API_NUM_PORTS 6
-#define API_RX_MAX 512
-#define API_AMPS_MS 5000
-#define API_NAMES_MS 1000
 #define API_ESPHOME_VERSION "2025.10.0" // the ESPHome release this API matches
 
-EspHomeApi espHomeApi;
+EspHomeApi g_espHomeApi;
 
+namespace
+{
 enum MsgType : uint32_t
 {
     HELLO_REQUEST = 1,
@@ -48,25 +52,39 @@ enum MsgType : uint32_t
     SWITCH_COMMAND_REQUEST = 33,
 };
 
-// Entity keys for port i (0-based).
-static uint32_t switchKey(int i) { return i + 1; }
-static uint32_t ampsKey(int i) { return 101 + i; }
-static uint32_t connectedKey(int i) { return 201 + i; }
+// Entity keys for port i (0-5).
+uint32_t switchKey(uint8_t i) { return 1 + i; }
+uint32_t ampsKey(uint8_t i) { return 101 + i; }
+uint32_t connectedKey(uint8_t i) { return 201 + i; }
 
-// Protobuf message builder.
-struct Pb
+// Protobuf encoder writing into a fixed buffer. len keeps counting past cap,
+// so len > cap means the message didn't fit.
+struct Proto
 {
-    std::vector<uint8_t> buf;
+    Proto(uint8_t *buf, size_t cap) : buf(buf), cap(cap) {}
 
+    uint8_t *buf;
+    size_t cap;
+    size_t len = 0;
+
+    // Append one byte, if there's room.
+    void byte(uint8_t b)
+    {
+        if (len < cap)
+            buf[len] = b;
+        len++;
+    }
+    // Append a varint.
     void varint(uint32_t v)
     {
         while (v >= 0x80)
         {
-            buf.push_back(uint8_t(v) | 0x80);
+            byte((uint8_t)v | 0x80);
             v >>= 7;
         }
-        buf.push_back(uint8_t(v));
+        byte((uint8_t)v);
     }
+    // An unsigned or bool field. Zero is the default, so it's left out.
     void u32(uint8_t field, uint32_t v)
     {
         if (!v)
@@ -74,100 +92,59 @@ struct Pb
         varint(field << 3);
         varint(v);
     }
-    void str(uint8_t field, const String &s)
-    {
-        varint(field << 3 | 2);
-        varint(s.length());
-        buf.insert(buf.end(), s.c_str(), s.c_str() + s.length());
-    }
+    // A fixed32 field.
     void fixed32(uint8_t field, uint32_t v)
     {
         varint(field << 3 | 5);
         for (int b = 0; b < 4; b++)
-            buf.push_back(uint8_t(v >> (8 * b)));
+            byte((uint8_t)(v >> (8 * b)));
     }
+    // A float field.
     void f32(uint8_t field, float f)
     {
         uint32_t v;
         memcpy(&v, &f, 4);
         fixed32(field, v);
     }
+    // A string field of len bytes.
+    void str(uint8_t field, const char *s, size_t len)
+    {
+        varint(field << 3 | 2);
+        varint(len);
+        for (size_t i = 0; i < len; i++)
+            byte(s[i]);
+    }
+    // A string field.
+    void str(uint8_t field, const char *s) { str(field, s, strlen(s)); }
 };
 
-struct Conn
+// How many bytes of s fit in max without splitting a UTF-8 character.
+size_t fitUtf8(const char *s, size_t max)
 {
-    WiFiClient client;
-    std::vector<uint8_t> rx;
-    bool subscribed = false;
-};
-
-static EspHomeApi::Hooks hooks;
-static String devName, devFriendlyName, fwVersion;
-static WiFiServer server(API_PORT);
-static Conn conns[API_CLIENTS];
-static bool lastOn[API_NUM_PORTS];
-static bool lastConnected[API_NUM_PORTS];
-static float lastAmps[API_NUM_PORTS];
-static String lastNames[API_NUM_PORTS];
-static uint32_t lastAmpsMs = 0;
-static uint32_t lastNamesMs = 0;
-static bool running = false;
+    size_t n = strlen(s);
+    if (n <= max)
+        return n;
+    while (max && ((uint8_t)s[max] & 0xC0) == 0x80)
+        max--;
+    return max;
+}
 
 // Decode a varint; false if it runs past end.
-static bool readVarint(const uint8_t *&p, const uint8_t *end, uint32_t &v)
+bool readVarint(const uint8_t *&p, const uint8_t *end, uint32_t &v)
 {
     v = 0;
     for (int shift = 0; p < end && shift < 35; shift += 7)
     {
         uint8_t b = *p++;
-        v |= uint32_t(b & 0x7F) << shift;
+        v |= (uint32_t)(b & 0x7F) << shift;
         if (!(b & 0x80))
             return true;
     }
     return false;
 }
 
-// Frame and send one message: 0x00, payload length, type, payload.
-static void send(Conn &c, uint32_t type, const Pb &msg = Pb())
-{
-    Pb frame;
-    frame.buf.push_back(0);
-    frame.varint(msg.buf.size());
-    frame.varint(type);
-    frame.buf.insert(frame.buf.end(), msg.buf.begin(), msg.buf.end());
-    c.client.write(frame.buf.data(), frame.buf.size());
-}
-
-// Send port i's power state.
-static void sendSwitch(Conn &c, int i, bool on)
-{
-    Pb m;
-    m.fixed32(1, switchKey(i));
-    m.u32(2, on);
-    send(c, SWITCH_STATE_RESPONSE, m);
-}
-
-// Send whether a device is plugged into port i.
-static void sendConnected(Conn &c, int i, bool connected)
-{
-    Pb m;
-    m.fixed32(1, connectedKey(i));
-    m.u32(2, connected);
-    send(c, BINARY_SENSOR_STATE_RESPONSE, m);
-}
-
-// Send port i's current; missing when the port has no monitor.
-static void sendAmps(Conn &c, int i, bool ok, float amps)
-{
-    Pb m;
-    m.fixed32(1, ampsKey(i));
-    m.f32(2, amps);
-    m.u32(3, !ok);
-    send(c, SENSOR_STATE_RESPONSE, m);
-}
-
 // Pull key and state out of a SwitchCommandRequest.
-static void parseSwitchCommand(const uint8_t *p, const uint8_t *end, uint32_t &key, bool &state)
+void parseSwitchCommand(const uint8_t *p, const uint8_t *end, uint32_t &key, bool &state)
 {
     while (p < end)
     {
@@ -185,7 +162,7 @@ static void parseSwitchCommand(const uint8_t *p, const uint8_t *end, uint32_t &k
         case 5:
             if (end - p < 4)
                 return;
-            v = p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24;
+            v = p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
             p += 4;
             if (tag >> 3 == 1)
                 key = v;
@@ -196,145 +173,337 @@ static void parseSwitchCommand(const uint8_t *p, const uint8_t *end, uint32_t &k
     }
 }
 
-// Port i's name, or "Port n" if it has none.
-static String portLabel(int i)
+// FNV-1a, to notice a rename without keeping a copy of the name.
+uint32_t nameHash(const char *s)
 {
-    return lastNames[i].length() ? lastNames[i] : String("Port ") + String(i + 1);
+    uint32_t h = 2166136261u;
+    while (*s)
+        h = (h ^ (uint8_t)*s++) * 16777619u;
+    return h;
+}
+
+// Port i's name, or "Port n" if it has none. Returns its length.
+int portLabel(const char *name, uint8_t i, char *out, size_t len)
+{
+    if (*name)
+        return snprintf(out, len, "%s", name);
+    return snprintf(out, len, "Port %u", i + 1);
 }
 
 // Round to the precision Home Assistant shows, so noise doesn't count as a change.
-static float roundAmps(float a) { return roundf(a * 1000.0f) / 1000.0f; }
+float roundAmps(float a) { return roundf(a * 1000.0f) / 1000.0f; }
+}
 
-void EspHomeApi::begin(const Hooks &h, const String &name, const String &friendlyName, const char *version)
+void EspHomeApi::begin(const Hooks &hooks, const char *hostname, const char *version)
 {
     if (_started)
         return;
+
+    _frame = (uint8_t *)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = _frame != nullptr;
+    for (auto &c : _clients)
+    {
+        c.rx = (uint8_t *)heap_caps_malloc(RX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ok = ok && c.rx;
+    }
+    if (!ok)
+    {
+        Serial.println("[esphome] PSRAM allocation failed — API unavailable");
+        heap_caps_free(_frame);
+        _frame = nullptr;
+        for (auto &c : _clients)
+        {
+            heap_caps_free(c.rx);
+            c.rx = nullptr;
+        }
+        return;
+    }
+
     _started = true;
-    hooks = h;
-    devName = name;
-    devFriendlyName = friendlyName;
-    fwVersion = version;
+    _hooks = hooks;
+    strlcpy(_hostname, hostname, sizeof(_hostname));
+    _version = version;
 }
 
-// Listen and advertise over mDNS. The socket is opened once and never closed:
-// the core can't re-bind the port straight after closing it.
-static void start()
+void EspHomeApi::start()
 {
-    running = true;
-    for (int i = 0; i < API_NUM_PORTS; i++)
+    _running = true;
+    for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
     {
-        lastOn[i] = hooks.portOn(i);
-        lastConnected[i] = hooks.portConnected(i);
-        lastNames[i] = hooks.portName(i);
+        _lastOn[i] = _hooks.portOn(i);
+        _lastConnected[i] = _hooks.portConnected(i);
+        _portNameHash[i] = nameHash(_hooks.portName(i));
+    }
+    _deviceNameHash = nameHash(_hooks.deviceName());
+
+    // The socket is opened once and kept: the port can't always be bound
+    // again straight after it's closed.
+    if (_listenFd < 0)
+    {
+        int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        int one = 1;
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (fd >= 0)
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        if (fd < 0 || bind(fd, (sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, MAX_CLIENTS) < 0)
+        {
+            if (fd >= 0)
+                close(fd);
+            Serial.printf("[esphome] can't listen on port %u\r\n", PORT);
+            return;
+        }
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+        _listenFd = fd;
     }
 
-    if (!server)
-    {
-        server.begin();
-        server.setNoDelay(true);
-    }
-
-    String mac = WiFi.macAddress();
-    mac.replace(":", "");
-    mac.toLowerCase();
-    MDNS.addService("esphomelib", "tcp", API_PORT);
-    MDNS.addServiceTxt("esphomelib", "tcp", "mac", mac.c_str());
-    MDNS.addServiceTxt("esphomelib", "tcp", "version", API_ESPHOME_VERSION);
-    MDNS.addServiceTxt("esphomelib", "tcp", "friendly_name", devFriendlyName.c_str());
-    MDNS.addServiceTxt("esphomelib", "tcp", "platform", "ESP32");
-    MDNS.addServiceTxt("esphomelib", "tcp", "network", "wifi");
-    Serial.printf("[esphome] API on port %u\r\n", API_PORT);
+    uint8_t m[6];
+    char mac[13];
+    WiFi.macAddress(m);
+    snprintf(mac, sizeof(mac), "%02x%02x%02x%02x%02x%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
+    mdns_txt_item_t txt[] = {
+        {"mac", mac},
+        {"version", API_ESPHOME_VERSION},
+        {"friendly_name", _hooks.deviceName()},
+        {"platform", "ESP32"},
+        {"network", "wifi"},
+    };
+    mdns_service_add(nullptr, "_esphomelib", "_tcp", PORT, txt, sizeof(txt) / sizeof(txt[0]));
+    Serial.printf("[esphome] API on port %u\r\n", PORT);
 }
 
-// Drop every client and withdraw the mDNS service.
-static void stop()
+void EspHomeApi::stop()
 {
-    running = false;
-    for (auto &c : conns)
-        c.client.stop();
+    _running = false;
+    for (auto &c : _clients)
+        drop(c);
     mdns_service_remove("_esphomelib", "_tcp");
     Serial.println("[esphome] API off");
 }
 
-// Answer one message from a client.
-static void handle(Conn &c, uint32_t type, const uint8_t *p, const uint8_t *end)
+void EspHomeApi::drop(Client &c)
+{
+    if (c.fd >= 0)
+        close(c.fd);
+    c.fd = -1;
+    c.rxLen = 0;
+    c.subscribed = false;
+}
+
+void EspHomeApi::acceptClient()
+{
+    if (_listenFd < 0)
+        return;
+    int fd = accept(_listenFd, nullptr, nullptr);
+    if (fd < 0)
+        return;
+    Client *slot = nullptr;
+    for (auto &c : _clients)
+        if (c.fd < 0)
+            slot = &c;
+    if (!_running || !slot)
+    {
+        close(fd);
+        return;
+    }
+    // No TCP_NODELAY: lwIP queues at most 16 segments per socket, and the
+    // entity list alone is 19 frames. Nagle lets back-to-back frames share
+    // segments; a single frame still goes out straight away.
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    slot->fd = fd;
+    slot->rxLen = 0;
+    slot->subscribed = false;
+    slot->lastRxMs = millis();
+}
+
+void EspHomeApi::receive(Client &c)
+{
+    for (;;)
+    {
+        ssize_t n = ::recv(c.fd, c.rx + c.rxLen, RX_BYTES - c.rxLen, MSG_DONTWAIT);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            break;
+        if (n <= 0)
+        {
+            drop(c);
+            return;
+        }
+        c.rxLen += n;
+        c.lastRxMs = millis();
+
+        size_t used = 0;
+        while (c.fd >= 0 && used < c.rxLen)
+        {
+            const uint8_t *p = c.rx + used, *end = c.rx + c.rxLen;
+            uint32_t len, type;
+            if (*p++ != 0x00)
+            {
+                drop(c);
+                return;
+            }
+            if (!readVarint(p, end, len) || !readVarint(p, end, type) || (size_t)(end - p) < len)
+                break;
+            handle(c, type, p, p + len);
+            used = p + len - c.rx;
+        }
+        if (c.fd < 0)
+            return;
+        memmove(c.rx, c.rx + used, c.rxLen - used);
+        c.rxLen -= used;
+        if (c.rxLen == RX_BYTES) // a message bigger than the buffer
+        {
+            drop(c);
+            return;
+        }
+    }
+    if (millis() - c.lastRxMs > IDLE_MS)
+        drop(c);
+}
+
+void EspHomeApi::transmit(Client &c, uint32_t type, size_t len)
+{
+    if (c.fd < 0)
+        return;
+    if (len > MESSAGE_BYTES)
+    {
+        Serial.printf("[esphome] message %u too big (%u bytes)\r\n", (unsigned)type, (unsigned)len);
+        drop(c);
+        return;
+    }
+    uint8_t head[HEADER_BYTES];
+    Proto h(head, sizeof(head));
+    h.byte(0x00);
+    h.varint(len);
+    h.varint(type);
+    uint8_t *frame = message() - h.len;
+    memcpy(frame, head, h.len);
+    size_t total = h.len + len;
+    if (::send(c.fd, frame, total, MSG_DONTWAIT) != (ssize_t)total)
+        drop(c);
+}
+
+void EspHomeApi::sendDeviceInfo(Client &c)
+{
+    uint8_t m[6];
+    char mac[18];
+    WiFi.macAddress(m);
+    snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
+
+    Proto p(message(), MESSAGE_BYTES);
+    p.str(2, _hostname, fitUtf8(_hostname, 31));
+    p.str(3, mac);
+    p.str(4, API_ESPHOME_VERSION);
+    p.str(5, __DATE__ ", " __TIME__);
+    p.str(6, "Smart USB Hub");
+    p.str(8, "unexpectedmaker.smart-usb-hub");
+    p.str(9, _version);
+    p.str(12, "Unexpected Maker");
+    p.str(13, _hooks.deviceName(), fitUtf8(_hooks.deviceName(), 120));
+    transmit(c, DEVICE_INFO_RESPONSE, p.len);
+}
+
+void EspHomeApi::sendEntities(Client &c)
+{
+    char label[100]; // a port name is at most PORT_NAME_MAX characters
+    char text[128];
+    for (uint8_t i = 0; i < HUB_NUM_PORTS && c.fd >= 0; i++)
+    {
+        portLabel(_hooks.portName(i), i, label, sizeof(label));
+
+        Proto sw(message(), MESSAGE_BYTES);
+        sw.str(1, text, snprintf(text, sizeof(text), "port_%u", i + 1));
+        sw.fixed32(2, switchKey(i));
+        sw.str(3, label);
+        sw.str(9, "outlet");
+        transmit(c, LIST_SWITCH_RESPONSE, sw.len);
+
+        Proto con(message(), MESSAGE_BYTES);
+        con.str(1, text, snprintf(text, sizeof(text), "port_%u_connected", i + 1));
+        con.fixed32(2, connectedKey(i));
+        con.str(3, text, snprintf(text, sizeof(text), "%s connected", label));
+        con.str(5, "plug");
+        transmit(c, LIST_BINARY_SENSOR_RESPONSE, con.len);
+
+        Proto amps(message(), MESSAGE_BYTES);
+        amps.str(1, text, snprintf(text, sizeof(text), "port_%u_current", i + 1));
+        amps.fixed32(2, ampsKey(i));
+        amps.str(3, text, snprintf(text, sizeof(text), "%s current", label));
+        amps.str(6, "A");
+        amps.u32(7, 3);
+        amps.str(9, "current");
+        amps.u32(10, 1); // measurement
+        transmit(c, LIST_SENSOR_RESPONSE, amps.len);
+    }
+    transmit(c, LIST_DONE_RESPONSE, 0);
+}
+
+void EspHomeApi::sendSwitch(Client &c, uint8_t port, bool on)
+{
+    Proto p(message(), MESSAGE_BYTES);
+    p.fixed32(1, switchKey(port));
+    p.u32(2, on);
+    transmit(c, SWITCH_STATE_RESPONSE, p.len);
+}
+
+void EspHomeApi::sendConnected(Client &c, uint8_t port, bool connected)
+{
+    Proto p(message(), MESSAGE_BYTES);
+    p.fixed32(1, connectedKey(port));
+    p.u32(2, connected);
+    transmit(c, BINARY_SENSOR_STATE_RESPONSE, p.len);
+}
+
+// missing_state is set when the port has no monitor.
+void EspHomeApi::sendAmps(Client &c, uint8_t port, bool ok, float amps)
+{
+    Proto p(message(), MESSAGE_BYTES);
+    p.fixed32(1, ampsKey(port));
+    p.f32(2, amps);
+    p.u32(3, !ok);
+    transmit(c, SENSOR_STATE_RESPONSE, p.len);
+}
+
+void EspHomeApi::handle(Client &c, uint32_t type, const uint8_t *p, const uint8_t *end)
 {
     switch (type)
     {
     case HELLO_REQUEST:
     {
-        Pb m;
-        m.u32(1, 1);
-        m.u32(2, 10);
-        m.str(3, String("Smart USB Hub ") + fwVersion);
-        m.str(4, devName);
-        send(c, HELLO_RESPONSE, m);
+        char info[48];
+        Proto m(message(), MESSAGE_BYTES);
+        m.u32(1, 1); // API 1.12, as ESPHome 2025.10.0 reports
+        m.u32(2, 12);
+        m.str(3, info, snprintf(info, sizeof(info), "Smart USB Hub %s", _version));
+        m.str(4, _hostname, fitUtf8(_hostname, 31));
+        transmit(c, HELLO_RESPONSE, m.len);
         break;
     }
     case CONNECT_REQUEST:
-        send(c, CONNECT_RESPONSE);
+        transmit(c, CONNECT_RESPONSE, 0);
         break;
     case DISCONNECT_REQUEST:
-        send(c, DISCONNECT_RESPONSE);
-        c.client.stop();
+        transmit(c, DISCONNECT_RESPONSE, 0);
+        drop(c);
         break;
     case PING_REQUEST:
-        send(c, PING_RESPONSE);
+        transmit(c, PING_RESPONSE, 0);
         break;
     case DEVICE_INFO_REQUEST:
-    {
-        Pb m;
-        m.str(2, devName);
-        m.str(3, WiFi.macAddress());
-        m.str(4, API_ESPHOME_VERSION);
-        m.str(5, __DATE__ ", " __TIME__);
-        m.str(6, "Smart USB Hub");
-        m.str(8, "unexpectedmaker.smart-usb-hub");
-        m.str(9, fwVersion);
-        m.str(12, "Unexpected Maker");
-        m.str(13, devFriendlyName);
-        send(c, DEVICE_INFO_RESPONSE, m);
+        sendDeviceInfo(c);
         break;
-    }
     case LIST_ENTITIES_REQUEST:
-        for (int i = 0; i < API_NUM_PORTS; i++)
-        {
-            String n(i + 1);
-            String label = portLabel(i);
-            Pb sw;
-            sw.str(1, String("port_") + n);
-            sw.fixed32(2, switchKey(i));
-            sw.str(3, label);
-            sw.str(9, "outlet");
-            send(c, LIST_SWITCH_RESPONSE, sw);
-
-            Pb connected;
-            connected.str(1, String("port_") + n + "_connected");
-            connected.fixed32(2, connectedKey(i));
-            connected.str(3, label + " connected");
-            connected.str(5, "plug");
-            send(c, LIST_BINARY_SENSOR_RESPONSE, connected);
-
-            Pb amps;
-            amps.str(1, String("port_") + n + "_current");
-            amps.fixed32(2, ampsKey(i));
-            amps.str(3, label + " current");
-            amps.str(6, "A");
-            amps.u32(7, 3);
-            amps.str(9, "current");
-            amps.u32(10, 1); // measurement
-            send(c, LIST_SENSOR_RESPONSE, amps);
-        }
-        send(c, LIST_DONE_RESPONSE);
+        sendEntities(c);
         break;
     case SUBSCRIBE_STATES_REQUEST:
         c.subscribed = true;
-        for (int i = 0; i < API_NUM_PORTS; i++)
+        for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
         {
             float amps = 0.0f;
-            bool ok = hooks.portAmps(i, amps);
-            sendSwitch(c, i, hooks.portOn(i));
-            sendConnected(c, i, hooks.portConnected(i));
+            bool ok = _hooks.portAmps(i, amps);
+            sendSwitch(c, i, _hooks.portOn(i));
+            sendConnected(c, i, _hooks.portConnected(i));
             sendAmps(c, i, ok, roundAmps(amps));
         }
         break;
@@ -343,46 +512,69 @@ static void handle(Conn &c, uint32_t type, const uint8_t *p, const uint8_t *end)
         uint32_t key = 0;
         bool state = false;
         parseSwitchCommand(p, end, key, state);
-        for (int i = 0; i < API_NUM_PORTS; i++)
+        for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
             if (key == switchKey(i))
-                hooks.setPort(i, state);
+                _hooks.setPort(i, state);
         break;
     }
     }
 }
 
-// Handle every complete message waiting in a client's buffer.
-static void parse(Conn &c)
+void EspHomeApi::pushChanges()
 {
-    while (!c.rx.empty() && c.client.connected())
+    for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
     {
-        const uint8_t *p = c.rx.data(), *end = p + c.rx.size();
-        uint32_t len, type;
-        if (*p++ != 0x00)
+        bool on = _hooks.portOn(i);
+        bool connected = _hooks.portConnected(i);
+        for (auto &c : _clients)
         {
-            c.client.stop();
-            return;
+            if (c.fd < 0 || !c.subscribed)
+                continue;
+            if (on != _lastOn[i])
+                sendSwitch(c, i, on);
+            if (connected != _lastConnected[i])
+                sendConnected(c, i, connected);
         }
-        if (!readVarint(p, end, len) || !readVarint(p, end, type) || uint32_t(end - p) < len)
-            return;
-        handle(c, type, p, p + len);
-        c.rx.erase(c.rx.begin(), c.rx.begin() + (p + len - c.rx.data()));
+        _lastOn[i] = on;
+        _lastConnected[i] = connected;
     }
-}
 
-// Read what a client sent, a chunk at a time, handling messages as they complete.
-static void serve(Conn &c)
-{
-    uint8_t tmp[128];
-    while (c.client.connected() && c.client.available())
+    if (millis() - _namesAt >= NAMES_MS)
     {
-        int n = c.client.read(tmp, sizeof tmp);
-        if (n <= 0)
-            return;
-        c.rx.insert(c.rx.end(), tmp, tmp + n);
-        parse(c);
-        if (c.rx.size() > API_RX_MAX)
-            c.client.stop();
+        _namesAt = millis();
+        bool renamed = false;
+        for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
+        {
+            uint32_t h = nameHash(_hooks.portName(i));
+            renamed |= (h != _portNameHash[i]);
+            _portNameHash[i] = h;
+        }
+        uint32_t h = nameHash(_hooks.deviceName());
+        if (h != _deviceNameHash)
+        {
+            _deviceNameHash = h;
+            mdns_service_txt_item_set("_esphomelib", "_tcp", "friendly_name", _hooks.deviceName());
+            renamed = true;
+        }
+        if (renamed)
+            for (auto &c : _clients)
+                drop(c);
+    }
+
+    if (millis() - _ampsAt < AMPS_MS)
+        return;
+    _ampsAt = millis();
+    for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
+    {
+        float amps = 0.0f;
+        bool ok = _hooks.portAmps(i, amps);
+        amps = roundAmps(amps);
+        if (amps == _lastAmps[i])
+            continue;
+        _lastAmps[i] = amps;
+        for (auto &c : _clients)
+            if (c.fd >= 0 && c.subscribed)
+                sendAmps(c, i, ok, amps);
     }
 }
 
@@ -390,85 +582,13 @@ void EspHomeApi::loop()
 {
     if (!_started)
         return;
-    if (hooks.enabled() != running)
-        running ? stop() : start();
-
-    WiFiClient incoming = server.accept();
-    if (!running)
-    {
-        incoming.stop();
+    if (_hooks.enabled() != _running)
+        _running ? stop() : start();
+    acceptClient();
+    if (!_running)
         return;
-    }
-    if (incoming)
-    {
-        Conn *slot = nullptr;
-        for (auto &c : conns)
-            if (!c.client.connected())
-                slot = &c;
-        if (slot)
-        {
-            *slot = Conn();
-            slot->client = incoming;
-            slot->client.setNoDelay(true);
-        }
-        else
-            incoming.stop();
-    }
-
-    for (auto &c : conns)
-        if (c.client.connected())
-            serve(c);
-
-    for (int i = 0; i < API_NUM_PORTS; i++)
-    {
-        bool on = hooks.portOn(i);
-        bool connected = hooks.portConnected(i);
-        for (auto &c : conns)
-        {
-            if (!c.subscribed || !c.client.connected())
-                continue;
-            if (on != lastOn[i])
-                sendSwitch(c, i, on);
-            if (connected != lastConnected[i])
-                sendConnected(c, i, connected);
-        }
-        lastOn[i] = on;
-        lastConnected[i] = connected;
-    }
-
-    // Clients only read names when they connect, so drop them after a rename
-    // and let them reconnect.
-    if (millis() - lastNamesMs >= API_NAMES_MS)
-    {
-        lastNamesMs = millis();
-        bool renamed = false;
-        for (int i = 0; i < API_NUM_PORTS; i++)
-        {
-            String name = hooks.portName(i);
-            if (name != lastNames[i])
-            {
-                lastNames[i] = name;
-                renamed = true;
-            }
-        }
-        if (renamed)
-            for (auto &c : conns)
-                c.client.stop();
-    }
-
-    if (millis() - lastAmpsMs < API_AMPS_MS)
-        return;
-    lastAmpsMs = millis();
-    for (int i = 0; i < API_NUM_PORTS; i++)
-    {
-        float amps = 0.0f;
-        bool ok = hooks.portAmps(i, amps);
-        amps = roundAmps(amps);
-        if (amps == lastAmps[i])
-            continue;
-        lastAmps[i] = amps;
-        for (auto &c : conns)
-            if (c.subscribed && c.client.connected())
-                sendAmps(c, i, ok, amps);
-    }
+    for (auto &c : _clients)
+        if (c.fd >= 0)
+            receive(c);
+    pushChanges();
 }

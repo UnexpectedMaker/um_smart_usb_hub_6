@@ -9,11 +9,14 @@
 // (plaintext, port 6053). Each port is a power switch, a device-connected
 // sensor and a current sensor.
 //
-// Like HubWebServer, the hardware is reached only through callbacks from
-// main.cpp. Everything runs in loop(), so no extra locking is needed.
+// Like HubWebServer, the hardware is reached only through hooks from
+// main.cpp. Everything runs in loop() and never waits on the network: sockets
+// are non-blocking, and a client that can't take a whole frame is dropped.
+// The frame and receive buffers are allocated once, in PSRAM; nothing is
+// allocated per message.
 #pragma once
 #include <Arduino.h>
-#include <functional>
+#include "settings/HubSettings.h"
 
 class EspHomeApi
 {
@@ -21,24 +24,90 @@ public:
     // Ports are indexed 0-5.
     struct Hooks
     {
-        std::function<bool()> enabled; // the API runs only while this is true
-        std::function<bool(int)> portOn;
-        std::function<bool(int)> portConnected;
-        std::function<String(int)> portName; // "" if unnamed
-        std::function<void(int, bool)> setPort;
-        std::function<bool(int, float &)> portAmps; // false if the port has no monitor
+        bool (*enabled)();                     // the API runs only while this is true
+        const char *(*deviceName)();           // shown in Home Assistant
+        bool (*portOn)(uint8_t port);
+        bool (*portConnected)(uint8_t port);
+        const char *(*portName)(uint8_t port); // "" if unnamed
+        void (*setPort)(uint8_t port, bool on);
+        bool (*portAmps)(uint8_t port, float &amps); // false if the port has no monitor
     };
 
-    // Call once mDNS is up; later calls do nothing. The API starts and stops
-    // in loop() to follow the enabled hook.
-    void begin(const Hooks &hooks, const String &name, const String &friendlyName, const char *version);
+    // Allocate the buffers. Call once mDNS is up; later calls do nothing.
+    // hostname is copied, as the hub's own name only changes on a restart;
+    // version must stay valid. The API starts and stops in loop() to follow
+    // the enabled hook.
+    void begin(const Hooks &hooks, const char *hostname, const char *version);
 
-    // Start or stop to match the enabled hook, serve clients and push state
-    // changes.
+    // Start or stop to match the enabled hook, serve clients and push changes.
     void loop();
 
 private:
+    static constexpr uint16_t PORT = 6053;
+    static constexpr uint8_t MAX_CLIENTS = 2;
+    // The largest message is the device info with a 120-byte friendly name:
+    // about 285 bytes, plus the header.
+    static constexpr size_t FRAME_BYTES = 320;
+    static constexpr size_t HEADER_BYTES = 11; // 0x00 + two 5-byte varints
+    static constexpr size_t MESSAGE_BYTES = FRAME_BYTES - HEADER_BYTES;
+    static constexpr size_t RX_BYTES = 640;    // per client
+    static constexpr uint32_t AMPS_MS = 5000;  // how often current is checked
+    static constexpr uint32_t NAMES_MS = 1000; // how often the names are checked
+    static constexpr uint32_t IDLE_MS = 60000; // Home Assistant pings every 20 s
+
+    struct Client
+    {
+        int fd = -1;
+        uint8_t *rx = nullptr; // RX_BYTES, in PSRAM
+        size_t rxLen = 0;
+        bool subscribed = false;
+        uint32_t lastRxMs = 0;
+    };
+
+    // Listen (once) and advertise over mDNS.
+    void start();
+    // Drop every client and withdraw the mDNS service.
+    void stop();
+    // Close a client's socket and free its slot.
+    void drop(Client &c);
+    // Take a waiting connection, if any. Refused while stopped or full.
+    void acceptClient();
+    // Read what a client sent and handle each complete message.
+    void receive(Client &c);
+    // Answer one message.
+    void handle(Client &c, uint32_t type, const uint8_t *p, const uint8_t *end);
+    // Send switch, connected and current changes to subscribed clients. After
+    // a rename, update mDNS and drop the clients so they reconnect and read
+    // the new names.
+    void pushChanges();
+
+    // Where a message is built: after room for its frame header.
+    uint8_t *message() { return _frame + HEADER_BYTES; }
+    // Write the header in front of the len-byte message at message() and send
+    // the frame. Drops the client if it didn't fit or the socket can't take it.
+    void transmit(Client &c, uint32_t type, size_t len);
+    void sendDeviceInfo(Client &c);
+    void sendEntities(Client &c);
+    void sendSwitch(Client &c, uint8_t port, bool on);
+    void sendConnected(Client &c, uint8_t port, bool connected);
+    void sendAmps(Client &c, uint8_t port, bool ok, float amps);
+
+    Hooks _hooks = {};
+    char _hostname[33] = "";
+    const char *_version = "";
     bool _started = false;
+    bool _running = false;
+    int _listenFd = -1;
+    uint8_t *_frame = nullptr; // FRAME_BYTES, in PSRAM
+    Client _clients[MAX_CLIENTS];
+
+    bool _lastOn[HUB_NUM_PORTS] = {};
+    bool _lastConnected[HUB_NUM_PORTS] = {};
+    float _lastAmps[HUB_NUM_PORTS] = {};
+    uint32_t _portNameHash[HUB_NUM_PORTS] = {};
+    uint32_t _deviceNameHash = 0;
+    uint32_t _ampsAt = 0;
+    uint32_t _namesAt = 0;
 };
 
-extern EspHomeApi espHomeApi;
+extern EspHomeApi g_espHomeApi;

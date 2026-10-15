@@ -1229,17 +1229,18 @@ void startNetServices()
         });
     Serial.printf("[web] http://%s/\r\n", WiFi.localIP().toString().c_str());
     startOTA();
-    espHomeApi.begin({[]() { return g_esphome.config().enabled; },
-                      [](int i) { return ports[i].isEnabled(); },
-                      [](int i) { return ports[i].isOccupied(); },
-                      [](int i) { return g_ports.config().names[i]; },
-                      [](int i, bool on) { ports[i].setEnabled(on); },
-                      [](int i, float &amps) {
-                          PortReading r = profiledPortReading(i);
-                          amps = r.ma / 1000.0f;
-                          return r.ok;
-                      }},
-                     g_device.hostname(), g_device.config().device_name, HUB_FW_VERSION);
+    g_espHomeApi.begin({[]() { return g_esphome.config().enabled; },
+                        []() { return g_device.config().device_name.c_str(); },
+                        [](uint8_t i) { return ports[i].isEnabled(); },
+                        [](uint8_t i) { return ports[i].isOccupied(); },
+                        [](uint8_t i) { return g_ports.config().names[i].c_str(); },
+                        [](uint8_t i, bool on) { ports[i].setEnabled(on); },
+                        [](uint8_t i, float &amps) {
+                            PortReading r = profiledPortReading(i);
+                            amps = r.ma / 1000.0f;
+                            return r.ok;
+                        }},
+                       g_device.hostname().c_str(), HUB_FW_VERSION);
     HubRegistry::dispatchNetUp(WiFi.localIP().toString().c_str());
 }
 
@@ -1633,7 +1634,7 @@ void loop()
     if (g_wifi.consumeChanged()) // WiFi settings edited — reconnect with them
         connectWiFi();
     serviceWiFi();
-    espHomeApi.loop();
+    g_espHomeApi.loop();
 
     // ---- port hardware ----
     if (g_expanderIrq)
