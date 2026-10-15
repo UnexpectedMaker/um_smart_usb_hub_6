@@ -84,6 +84,29 @@ file is for:
 - Nothing blocks boot or the main loop waiting for the network. WiFi, the web
   server and NTP all come up in the background.
 
+## Memory
+
+- Buffers and data live in PSRAM, allocated with
+  `heap_caps_malloc(..., MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` (see
+  `PortHistory` and `EnvHistory`). Internal SRAM is only for what the IDF
+  needs it for: DMA, ISRs, task stacks and lwIP.
+- `std::vector`, `String` and `malloc` of 4 KB or less always come from
+  internal SRAM (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`), so don't use
+  them for buffers.
+- Allocate once, at start-up. Nothing is allocated per message, per request
+  or per pass of the main loop. Build text into fixed or stack buffers with
+  `snprintf`.
+
+## Network connections
+
+- Sockets used from the main loop are non-blocking. Never call
+  `WiFiClient::write` there: it retries for up to 10 s on a stalled client.
+  Send with `MSG_DONTWAIT`, and drop a client that can't take a whole frame.
+- Every long-lived connection has a dead-client timeout, so stale
+  connections can't fill the slots.
+- lwIP queues at most 16 segments per socket. Many small sends in a row
+  (with `TCP_NODELAY`) hit that limit; leave Nagle on or batch the frames.
+
 ## I2C bus
 
 The expander, both INA3221s and the AHT20 share one I2C bus, used from more
