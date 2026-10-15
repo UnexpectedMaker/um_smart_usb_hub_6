@@ -205,6 +205,7 @@ WiFiSettings g_wifi;
 LocationSettings g_location;
 LedsSettings g_leds;
 PortsSettings g_ports;
+EspHomeSettings g_esphome;
 WebsiteSettings g_website;
 ProfilerSettings g_profiler;
 SchedulesSettings g_schedules;
@@ -434,6 +435,18 @@ void PortsSettings::fromJson(const nlohmann::json &j)
 void PortsSettings::onConfigChanged()
 {
     applyPowerModes();
+}
+
+// ===========================================================================
+// esphome
+// ===========================================================================
+
+std::vector<HubSettingField> EspHomeSettings::uiSchema()
+{
+    return {
+        {.type = F::T::Bool, .key = "enabled", .label = "ESPHome API",
+         .help = "Lets Home Assistant find and control the hub with the ESPHome integration."},
+    };
 }
 
 // ===========================================================================
