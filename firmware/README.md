@@ -184,6 +184,11 @@ The web page is built on a JSON API that other tools can use too, for example
 port on. Every endpoint, with full example requests and responses, is in the
 [API reference](../docs/rest_api.md).
 
+### Home Assistant
+
+Turn on **ESPHome API** in Settings. Home Assistant should find the hub on its
+own; if not, add it with the ESPHome integration.
+
 ## Project layout
 
 ```
@@ -192,6 +197,7 @@ src/
   ports/         USBPort — one port's power, fault and device sense
   settings/      HubSettings — everything stored in flash (/settings.json)
   web/           HubWebServer (routes and API) and HubWebUI (the embedded page)
+  esphome/       EspHomeApi — Home Assistant through the ESPHome native API
 lib/
   UM_INA3221/    INA3221 power monitor driver
   UM_LCA9555/    XL9555 / LCA9555 I/O expander driver

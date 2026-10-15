@@ -346,6 +346,24 @@ public:
 extern PortsSettings g_ports;
 
 // ===========================================================================
+// esphome — Home Assistant through the ESPHome native API (esphome/).
+// ===========================================================================
+struct HubEspHomeConfig
+{
+    bool enabled = false;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubEspHomeConfig, enabled);
+
+class EspHomeSettings : public HubSettingsT<HubEspHomeConfig>
+{
+public:
+    const char *name() const override { return "esphome"; }
+    const char *label() const override { return "Home Assistant"; }
+    std::vector<HubSettingField> uiSchema() override;
+};
+extern EspHomeSettings g_esphome;
+
+// ===========================================================================
 // website — the web UI's own preferences. Set by the theme button, not the
 // Settings drawer.
 // ===========================================================================

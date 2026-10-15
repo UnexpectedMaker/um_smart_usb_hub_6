@@ -26,6 +26,7 @@
 //   ports/      USBPort — one port's power, fault and device sense
 //   settings/   HubSettings — everything stored in flash
 //   web/        HubWebServer (routes, API) and HubWebUI (the embedded page)
+//   esphome/    EspHomeApi — Home Assistant through the ESPHome native API
 //   ../lib/     the INA3221 and XL9555 drivers, and the JSON library
 #include <Arduino.h>
 #include <Wire.h>
@@ -43,6 +44,7 @@
 #include "UM_INA3221.h"
 #include "ports/USBPort.h"
 #include "web/HubWebServer.h"
+#include "esphome/EspHomeApi.h"
 #include "settings/HubSettings.h"
 #include "history/EnvHistory.h"
 #include "history/PortHistory.h"
@@ -1227,6 +1229,16 @@ void startNetServices()
         });
     Serial.printf("[web] http://%s/\r\n", WiFi.localIP().toString().c_str());
     startOTA();
+    espHomeApi.begin({[]() { return g_esphome.config().enabled; },
+                      [](int i) { return ports[i].isEnabled(); },
+                      [](int i) { return ports[i].isOccupied(); },
+                      [](int i, bool on) { ports[i].setEnabled(on); },
+                      [](int i, float &amps) {
+                          PortReading r = profiledPortReading(i);
+                          amps = r.ma / 1000.0f;
+                          return r.ok;
+                      }},
+                     g_device.hostname(), g_device.config().device_name, HUB_FW_VERSION);
     HubRegistry::dispatchNetUp(WiFi.localIP().toString().c_str());
 }
 
@@ -1620,6 +1632,7 @@ void loop()
     if (g_wifi.consumeChanged()) // WiFi settings edited — reconnect with them
         connectWiFi();
     serviceWiFi();
+    espHomeApi.loop();
 
     // ---- port hardware ----
     if (g_expanderIrq)

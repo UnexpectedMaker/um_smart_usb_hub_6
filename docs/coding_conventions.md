@@ -14,6 +14,7 @@ firmware/
     ports/         USBPort — one port's power, fault and device sense
     settings/      HubSettings — every saved setting and how it's stored
     web/           HubWebServer (routes and API) and HubWebUI (the embedded page)
+    esphome/       EspHomeApi — Home Assistant through the ESPHome native API
   lib/
     UM_INA3221/    INA3221 power monitor driver
     UM_LCA9555/    XL9555 / LCA9555 I/O expander driver

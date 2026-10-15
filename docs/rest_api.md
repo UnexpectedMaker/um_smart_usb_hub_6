@@ -935,6 +935,15 @@ curl http://192.168.1.100/api/settings/schema
       ]
     },
     {
+      "name": "esphome",
+      "label": "Home Assistant",
+      "values": { "enabled": false },
+      "fields": [
+        { "type": "bool", "key": "enabled", "label": "ESPHome API",
+          "help": "Lets Home Assistant find and control the hub with the ESPHome integration." }
+      ]
+    },
+    {
       "name": "profiler",
       "label": "Profiler",
       "values": {
