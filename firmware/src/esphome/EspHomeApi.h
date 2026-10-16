@@ -7,7 +7,7 @@
 //
 // EspHomeApi.h — Home Assistant support through the ESPHome native API
 // (plaintext, port 6053). Each port is a power switch, a device-connected
-// sensor and a current sensor.
+// sensor and a current sensor; the hub adds temperature and humidity.
 //
 // Like HubWebServer, the hardware is reached only through hooks from
 // main.cpp. Everything runs in loop() and never waits on the network: sockets
@@ -31,6 +31,7 @@ public:
         const char *(*portName)(uint8_t port); // "" if unnamed
         void (*setPort)(uint8_t port, bool on);
         bool (*portAmps)(uint8_t port, float &amps); // false if the port has no monitor
+        bool (*climate)(float &tempC, float &humidity); // false until there's a reading
     };
 
     // Allocate the buffers. Call once mDNS is up; later calls do nothing.
@@ -51,7 +52,7 @@ private:
     static constexpr size_t HEADER_BYTES = 11; // 0x00 + two 5-byte varints
     static constexpr size_t MESSAGE_BYTES = FRAME_BYTES - HEADER_BYTES;
     static constexpr size_t RX_BYTES = 640;    // per client
-    static constexpr uint32_t AMPS_MS = 5000;  // how often current is checked
+    static constexpr uint32_t SENSORS_MS = 5000; // how often the sensors are checked
     static constexpr uint32_t NAMES_MS = 1000; // how often the names are checked
     // A client that has sent nothing for PING_MS is pinged, and dropped after
     // IDLE_MS. Home Assistant only pings when it hasn't heard from the hub, so
@@ -96,15 +97,15 @@ private:
     void transmit(Client &c, uint32_t type, size_t len);
     // Name, MAC, versions and the friendly name.
     void sendDeviceInfo(Client &c);
-    // Each port's switch, connected sensor and current sensor, then the end
-    // of the list.
+    // Each port's switch, connected sensor and current sensor, the temperature
+    // and humidity sensors, then the end of the list.
     void sendEntities(Client &c);
     // Port power state.
     void sendSwitch(Client &c, uint8_t port, bool on);
     // Whether a device is plugged in.
     void sendConnected(Client &c, uint8_t port, bool connected);
-    // Port current in amps; marked missing when the port has no monitor.
-    void sendAmps(Client &c, uint8_t port, bool ok, float amps);
+    // A sensor reading; marked missing when there isn't one.
+    void sendSensor(Client &c, uint32_t key, bool ok, float value);
 
     Hooks _hooks = {};
     char _hostname[33] = "";
@@ -118,9 +119,12 @@ private:
     bool _lastOn[HUB_NUM_PORTS] = {};
     bool _lastConnected[HUB_NUM_PORTS] = {};
     float _lastAmps[HUB_NUM_PORTS] = {};
+    bool _lastClimateOk = false;
+    float _lastTempC = 0.0f;
+    float _lastHumidity = 0.0f;
     uint32_t _portNameHash[HUB_NUM_PORTS] = {};
     uint32_t _deviceNameHash = 0;
-    uint32_t _ampsAt = 0;
+    uint32_t _sensorsAt = 0;
     uint32_t _namesAt = 0;
     uint32_t _retryAt = 0; // millis() of a failed listen, 0 if none
 };

@@ -1273,6 +1273,11 @@ void startNetServices()
                             PortReading r = profiledPortReading(i);
                             amps = r.ma / 1000.0f;
                             return r.ok;
+                        },
+                        [](float &tempC, float &humidity) {
+                            tempC = g_tempC;
+                            humidity = g_humid;
+                            return g_tempValid;
                         }},
                        g_device.hostname().c_str(), HUB_FW_VERSION);
     HubRegistry::dispatchNetUp(WiFi.localIP().toString().c_str());
