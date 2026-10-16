@@ -57,6 +57,9 @@ enum MsgType : uint32_t
 uint32_t switchKey(uint8_t i) { return 1 + i; }
 uint32_t ampsKey(uint8_t i) { return 101 + i; }
 uint32_t connectedKey(uint8_t i) { return 201 + i; }
+// Entity keys for the hub's own sensors.
+constexpr uint32_t TEMPERATURE_KEY = 301;
+constexpr uint32_t HUMIDITY_KEY = 302;
 
 // Protobuf encoder writing into a fixed buffer. len keeps counting past cap,
 // so len > cap means the message didn't fit.
@@ -205,6 +208,8 @@ void portLabel(const char *name, uint8_t i, char *out, size_t len)
 
 // Round to the precision Home Assistant shows, so noise doesn't count as a change.
 float roundAmps(float a) { return roundf(a * 1000.0f) / 1000.0f; }
+// The same for temperature and humidity, shown to one decimal place.
+float roundTenth(float v) { return roundf(v * 10.0f) / 10.0f; }
 }
 
 void EspHomeApi::begin(const Hooks &hooks, const char *hostname, const char *version)
@@ -461,6 +466,27 @@ void EspHomeApi::sendEntities(Client &c)
         amps.u32(10, 1); // measurement
         transmit(c, LIST_SENSOR_RESPONSE, amps.len);
     }
+
+    Proto temp(message(), MESSAGE_BYTES);
+    temp.str(1, "temperature");
+    temp.fixed32(2, TEMPERATURE_KEY);
+    temp.str(3, "Temperature");
+    temp.str(6, "°C");
+    temp.u32(7, 1);
+    temp.str(9, "temperature");
+    temp.u32(10, 1); // measurement
+    transmit(c, LIST_SENSOR_RESPONSE, temp.len);
+
+    Proto hum(message(), MESSAGE_BYTES);
+    hum.str(1, "humidity");
+    hum.fixed32(2, HUMIDITY_KEY);
+    hum.str(3, "Humidity");
+    hum.str(6, "%");
+    hum.u32(7, 1);
+    hum.str(9, "humidity");
+    hum.u32(10, 1); // measurement
+    transmit(c, LIST_SENSOR_RESPONSE, hum.len);
+
     transmit(c, LIST_DONE_RESPONSE, 0);
 }
 
@@ -480,11 +506,11 @@ void EspHomeApi::sendConnected(Client &c, uint8_t port, bool connected)
     transmit(c, BINARY_SENSOR_STATE_RESPONSE, p.len);
 }
 
-void EspHomeApi::sendAmps(Client &c, uint8_t port, bool ok, float amps)
+void EspHomeApi::sendSensor(Client &c, uint32_t key, bool ok, float value)
 {
     Proto p(message(), MESSAGE_BYTES);
-    p.fixed32(1, ampsKey(port));
-    p.f32(2, amps);
+    p.fixed32(1, key);
+    p.f32(2, value);
     p.u32(3, !ok);
     transmit(c, SENSOR_STATE_RESPONSE, p.len);
 }
@@ -528,7 +554,13 @@ void EspHomeApi::handle(Client &c, uint32_t type, const uint8_t *p, const uint8_
             bool ok = _hooks.portAmps(i, amps);
             sendSwitch(c, i, _hooks.portOn(i));
             sendConnected(c, i, _hooks.portConnected(i));
-            sendAmps(c, i, ok, roundAmps(amps));
+            sendSensor(c, ampsKey(i), ok, roundAmps(amps));
+        }
+        {
+            float tempC = 0.0f, humidity = 0.0f;
+            bool ok = _hooks.climate(tempC, humidity);
+            sendSensor(c, TEMPERATURE_KEY, ok, roundTenth(tempC));
+            sendSensor(c, HUMIDITY_KEY, ok, roundTenth(humidity));
         }
         break;
     case SWITCH_COMMAND_REQUEST:
@@ -585,9 +617,9 @@ void EspHomeApi::pushChanges()
                 drop(c);
     }
 
-    if (millis() - _ampsAt < AMPS_MS)
+    if (millis() - _sensorsAt < SENSORS_MS)
         return;
-    _ampsAt = millis();
+    _sensorsAt = millis();
     for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
     {
         float amps = 0.0f;
@@ -598,7 +630,26 @@ void EspHomeApi::pushChanges()
         _lastAmps[i] = amps;
         for (auto &c : _clients)
             if (c.fd >= 0 && c.subscribed)
-                sendAmps(c, i, ok, amps);
+                sendSensor(c, ampsKey(i), ok, amps);
+    }
+
+    float tempC = 0.0f, humidity = 0.0f;
+    bool ok = _hooks.climate(tempC, humidity);
+    tempC = roundTenth(tempC);
+    humidity = roundTenth(humidity);
+    bool tempChanged = ok != _lastClimateOk || tempC != _lastTempC;
+    bool humidityChanged = ok != _lastClimateOk || humidity != _lastHumidity;
+    _lastClimateOk = ok;
+    _lastTempC = tempC;
+    _lastHumidity = humidity;
+    for (auto &c : _clients)
+    {
+        if (c.fd < 0 || !c.subscribed)
+            continue;
+        if (tempChanged)
+            sendSensor(c, TEMPERATURE_KEY, ok, tempC);
+        if (humidityChanged)
+            sendSensor(c, HUMIDITY_KEY, ok, humidity);
     }
 }
 
