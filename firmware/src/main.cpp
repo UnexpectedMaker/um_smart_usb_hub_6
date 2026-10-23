@@ -50,7 +50,7 @@
 #include "history/PortHistory.h"
 
 // Firmware version, reported by the web UI, the API and 'info'.
-#define HUB_FW_VERSION "2.1.0"
+#define HUB_FW_VERSION "2.2.0"
 
 #define NUM_PORTS HUB_NUM_PORTS
 
@@ -1566,6 +1566,10 @@ void setup()
 {
     g_i2cMutex = xSemaphoreCreateRecursiveMutex();
 
+    // A 4 KB transmit buffer (the default is 256 bytes), set before begin(), so
+    // a burst of output waits in the buffer while a serial monitor reads it,
+    // instead of being dropped by the zero timeout below.
+    Serial.setTxBufferSize(4096);
     Serial.begin(115200);
     // Don't wait on serial when nothing's reading it. A blocked print while
     // loop() holds SettingsLock stalls the web server long enough to trip

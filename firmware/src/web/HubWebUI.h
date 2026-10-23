@@ -55,8 +55,8 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
 
   <aside class="readout">
     <div class="ro-group">
-      <h3>Power</h3>
-      <div class="ro-line"><span>Total draw</span><span id="s-total">--</span></div>
+      <h3 class="ro-head">Power<span>Total draw</span></h3>
+      <div class="env-graph"><canvas id="power-canvas"></canvas></div>
     </div>
     <div class="ro-group">
       <h3>Environment</h3>
@@ -142,6 +142,7 @@ button:not(:disabled) { cursor:pointer; }
   --card:#151b23; --card-hover:#1b222c; /* each socket on the panel */
   --slot-off:#0d1117;                   /* USB-C opening with its LED dark */
   --drawer:#151b23;                     /* settings drawer, one step off the page */
+  --graph-well:#0a0d12;                 /* behind the sidebar graphs, darker than the panel */
   --txt-blue:#4493f8; --txt-pink:#f778ba;  /* LED hues as readable text */
   --border:#3d444d; --border-soft:#3d444db3;
   --text:#f0f6fc; --text-muted:#9198a1; --text-dim:#9198a1;
@@ -162,6 +163,7 @@ button:not(:disabled) { cursor:pointer; }
   --card:#ffffff; --card-hover:#f6f8fa;
   --slot-off:#d1d9e0;
   --drawer:#eff2f5;
+  --graph-well:#e1e6eb;
   --txt-blue:#0969da; --txt-pink:#bf3989;
   --border:#d1d9e0; --border-soft:#d1d9e0b3;
   --text:#1f2328; --text-muted:#59636e; --text-dim:#59636e;
@@ -214,47 +216,72 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 /* Selected = its detail is open below. Same 1px border, so nothing shifts. */
 .socket.selected { border-color:var(--accent); }
 .socket.graphing { box-shadow:inset 0 0 0 1px var(--accent); }
-.sock-head { width:100%; min-height:1.5rem; display:flex; align-items:center; justify-content:center;
-  padding:0 .9rem; }
-/* The number sits in the card's top left corner; the name is centred between
-   it and the find button. */
-.sock-num { position:absolute; top:.2rem; left:.3rem; font-size:1.1rem; font-weight:700; line-height:1;
-  font-variant-numeric:tabular-nums; }
+/* The name line spans the whole card, from the number's block to 3px from the
+   right edge, so the name has all the room there is. */
+.sock-head { align-self:stretch; min-height:1.3rem; margin:-.75rem -.6rem 0; display:flex; align-items:center;
+  justify-content:flex-end; padding:0 3px 0 1.3rem; }
+/* A band across the whole top of the card, on the card's outer edge, as tall
+   as the number's block and a quarter of its strength. */
+.sock-head::before { content:''; position:absolute; top:-1px; left:-1px; right:-1px;
+  height:calc(.37rem + 1.1rem - 1pt); border-radius:10px 10px 0 0;
+  background:color-mix(in srgb, var(--text-muted) 25%, var(--card)); }
+/* The number sits on a block in the card's top left corner, on the card's
+   outer edge, in the reverse of the text colours. The name is on the same
+   line, right-justified. Hovering the card turns the number into the find
+   icon; clicking it flashes the port's LED. */
+.sock-num { position:absolute; z-index:1; top:-1px; left:-1px; width:1.3rem; padding:.17rem 0 .2rem; text-align:center;
+  border-radius:10px 0 8px 0; background:var(--text-muted); color:var(--card); cursor:pointer;
+  font-size:calc(1.1rem - 1pt); font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
+.num-icon { display:none; }
+.num-icon .oi { width:.8em; height:.8em; margin:.1em 0; vertical-align:top; }
+.socket:hover .num-n { display:none; }
+.socket:hover .num-icon { display:inline; }
+[data-theme="dark"] .sock-num:hover { background:#fff; }
+[data-theme="light"] .sock-num:hover { background:#000; }
+/* The name and, while it's hovered or being edited, a pencil at the left of
+   its box. */
+.name-wrap { position:relative; z-index:1; display:flex; flex:1 1 auto; min-width:0; }
+.name-edit { position:absolute; left:3px; top:50%; margin-top:-.35rem; width:.7rem; height:.7rem; line-height:0;
+  color:var(--text-muted); visibility:hidden; pointer-events:none; }
+.name-edit .oi { width:.7rem; height:.7rem; }
+.name-wrap:has(.sock-name:hover) .name-edit, .name-wrap:has(.sock-name:focus) .name-edit { visibility:visible; }
 .sock-name { min-width:0; width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  border:0; background:transparent; padding:.05rem .1rem; color:var(--text-muted);
-  font-size:.74rem; font-weight:700; text-align:center; line-height:1.2; border-radius:4px; }
+  border:0; background:transparent; padding:.05rem 2px; color:var(--text-muted);
+  font-size:.74rem; font-weight:700; text-align:right; line-height:1.2; border-radius:4px; }
+/* A name that doesn't fit is shown 1pt smaller (fitName()); only if it still
+   doesn't fit is it cut short with an ellipsis. */
+.sock-name.small { font-size:calc(.74rem - 1pt); }
 .sock-name::placeholder { color:var(--text-muted); opacity:1; }
 .sock-name:hover, .sock-name:focus { color:var(--text); background:var(--surface-2); outline:none; }
 .sock-name.named { color:var(--text); }
-/* Find: flashes the port's LED so it can be spotted on the hub. Sits in the
-   card's top right corner, clear of the name. */
-.sock-find { position:absolute; top:.15rem; right:.15rem; display:flex; align-items:center; justify-content:center;
-  width:1rem; height:1rem; border:0; border-radius:4px; background:transparent; color:var(--text-muted);
-  font-size:.65rem; cursor:pointer; padding:0; }
-.sock-find:hover { color:var(--text); background:var(--surface-2); }
-.sock-state { font-size:.68rem; font-weight:600; color:var(--text-muted); text-align:center; line-height:1.2; min-height:.85rem; }
 
-/* The USB-C opening, filled with whatever that port's RGB LED is showing — it
-   mirrors the hardware LED. Static states are set here; pulse and flash are
-   driven from JS on one shared clock (animate()) so all six stay in phase. */
-.slot { width:3.4rem; height:1.05rem; border-radius:999px; border:2px solid var(--border);
-  background:var(--slot-off); }
-.st-blue  .slot { background:var(--led-blue); }
-.st-green .slot { background:var(--led-green); }
-.st-pink  .slot { background:var(--led-pink); }
+/* The port's status: a block filled with the colour its RGB LED is showing,
+   softened into the card, with the state in words inside it. The fill is its
+   own layer (.slot-fill), so the pulse and flash, driven from JS on one shared
+   clock (animate()), fade only the colour and never the words. */
+.slot { position:relative; overflow:hidden; width:4.8rem; height:1.4rem; margin-top:3px; border-radius:8px;
+  border:1px solid transparent; background:var(--surface-2); display:flex; align-items:center; justify-content:center;
+  font-size:.72rem; font-weight:700; line-height:1; white-space:nowrap; color:var(--text); }
+.slot-fill { position:absolute; inset:0; background:color-mix(in srgb, var(--hue) var(--mix, 50%), var(--card)); }
+.slot-word { position:relative; }
+.socket { --hue:transparent; }
+.st-green { --hue:var(--led-green); }
+.st-blue, .st-pulse { --hue:var(--led-blue); }
+.st-fault { --hue:var(--led-red); }
+.st-pink, .st-pinkpulse { --hue:var(--led-pink); }
+/* Light theme: a calmer green than the LED's #00ff00, which is glaring on white. */
+[data-theme="light"] .st-green { --hue:#2da44e; }
+/* Dark theme: green at half strength; blue, red and pink at 80%. */
+[data-theme="dark"] .socket:not(.st-green) { --mix:80%; }
+.st-off .slot { color:var(--text-muted); border-color:var(--border); }
+/* Find: the block flashes white, with dark words. */
+.slot.identify .slot-fill { background:#fff; opacity:1 !important; }
+.slot.identify { color:#000; }
 /* Waiting for a power change to come back from the hub. */
-.st-wait  .slot { background:repeating-linear-gradient(45deg, var(--slot-off) 0 4px, var(--border) 4px 8px); }
-
-/* State words use readable text colours in the LED's hue — the raw LED blue and
-   red are far too dark to read as text on a dark background. */
-.st-blue  .sock-state, .st-pulse .sock-state     { color:var(--txt-blue); }
-.st-green .sock-state                            { color:var(--success); }
-.st-fault .sock-state                            { color:var(--danger); }
-.st-pink  .sock-state, .st-pinkpulse .sock-state { color:var(--txt-pink); }
+.st-wait .slot-fill { background:repeating-linear-gradient(45deg, var(--slot-off) 0 4px, var(--border) 4px 8px); }
 
 /* Readings: current is the headline number, volts and power beneath it. */
 .sock-read { text-align:center; }
-.sock-read:hover { color:var(--accent); }
 .sock-amps { font-size:1.1rem; font-weight:600; line-height:1.15; font-variant-numeric:tabular-nums; }
 .sock-amps small { font-size:.7rem; font-weight:500; color:var(--text-muted); }
 .sock-sub { font-size:.72rem; color:var(--text-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -264,17 +291,25 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .sock-sched .at { display:block; font-size:.66rem; font-variant-numeric:tabular-nums; }
 
 /* ---- Readout: the hub's own numbers, as label / value lines. ---- */
-.readout { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:.3rem 1rem .8rem; }
+.readout { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:.1rem 1rem .8rem; }
 @media (max-width:960px){
   .readout { display:grid; grid-template-columns:repeat(auto-fit, minmax(13rem,1fr)); column-gap:1.5rem; } }
 /* Group heading is the strongest text; the line labels under it are quieter. */
 .ro-group h3 { margin:.8rem 0 .25rem; padding-bottom:.3rem; border-bottom:1px solid var(--border);
   font-size:.9rem; font-weight:600; color:var(--text); }
 .ro-line { display:flex; justify-content:space-between; gap:.75rem; padding:.1rem 0; font-size:.82rem; }
-.ro-line span:first-child { color:var(--text-muted); }
+.ro-line span:first-child { color:var(--text-muted); white-space:nowrap; }
 .ro-line span:last-child { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.8rem;
   text-align:right; overflow-wrap:anywhere; }
-.env-graph { width:100%; height:6.4rem; margin-top:.35rem; }
+/* Power: the label sits on the heading line, at the right, and the value has
+   the line below to itself, so it never wraps. */
+.ro-group h3.ro-head { display:flex; justify-content:space-between; align-items:baseline; gap:.75rem; }
+.ro-head span { font-size:.82rem; font-weight:400; color:var(--text-muted); white-space:nowrap; }
+.ro-value { padding:.1rem 0; text-align:right; white-space:nowrap;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.8rem; }
+/* The sidebar graphs sit on a darker background, 3px bigger than the graph all
+   round, so their edges show and nothing at the edge is cut. */
+.env-graph { width:100%; height:6.4rem; margin-top:.35rem; padding:3px; background:var(--graph-well); }
 .env-graph canvas { width:100%; height:100%; display:block; }
 
 /* ---- Detail for the selected port: next change, timeline, schedule rows. ---- */
@@ -284,10 +319,12 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .detail-title { font-size:1.1rem; font-weight:700; }
 /* Sliding power toggle on each port card. Clicking it toggles power; clicking
    anywhere else on the card opens/closes the detail panel. */
-.port-toggle { position:relative; width:4rem; height:2.1rem; border-radius:5px; background:var(--surface-2); border:1px solid var(--border); cursor:pointer; flex-shrink:0; transition:background-color .2s, border-color .2s; }
+.port-toggle { position:relative; width:4.8rem; height:1.89rem; border-radius:7px; background:var(--surface-2); border:1px solid var(--border); cursor:pointer; flex-shrink:0; transition:background-color .2s, border-color .2s; }
 .toggle-knob { position:absolute; top:3px; bottom:3px; left:3px; width:1.8rem; border-radius:3px; background:var(--text-dim); transition:left .2s, background-color .2s; }
-.port-toggle.on { background:var(--success); border-color:var(--success); }
-.port-toggle.on .toggle-knob { left:calc(100% - 1.8rem - 4px); background:#fff; }
+/* The power switch: as wide as the status block, with a square knob. */
+.port-toggle .toggle-knob { width:calc(1.89rem - 8px); border-radius:5px; }
+.port-toggle.on { background:#238636; border-color:#238636; }
+.port-toggle.on .toggle-knob { left:calc(100% - (1.89rem - 8px) - 4px); background:#fff; }
 /* The toggle has its own hover, and the card's goes away under it, so it's
    clear a click here switches the port rather than selecting it. */
 .port-toggle:hover { border-color:var(--text-muted); box-shadow:0 0 0 2px var(--border); }
@@ -450,7 +487,8 @@ body.offline .layout, body.offline .tools, body.offline .drawer {
 .graph-dot.i { background:var(--success); }
 .graph-dot.p { background:var(--txt-pink); }
 .mini-graph { display:block; width:100%; height:2.4rem; border-top:1px solid var(--border-soft); padding-top:.35rem; cursor:pointer; }
-.mini-canvas { width:100%; height:100%; display:block; border-radius:4px; transition:background-color .15s; }
+.mini-canvas { width:100%; height:100%; display:block; border-radius:4px; background:var(--graph-well);
+  transition:background-color .15s; }
 /* The mini graph has its own hover, and the card's goes away under it, so it's
    clear a click here changes the graph's metric rather than selecting the port. */
 .mini-graph:hover .mini-canvas { background:var(--surface-2); }
@@ -546,6 +584,7 @@ const ICONS = {
   eyeClosed: 'M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.832.88 9.577.43 8.9a1.619 1.619 0 0 1 0-1.797c.353-.533.995-1.42 1.868-2.305L.31 3.357A.75.75 0 0 1 .143 2.31Zm1.536 5.622A.12.12 0 0 0 1.657 8c0 .021.006.045.022.068.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688a14.207 14.207 0 0 0-1.85 2.244ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 1 1-.473-1.423A6.207 6.207 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z',
   graph: 'M1.75 13.5h12.5a.75.75 0 0 1 0 1.5H1.75A1.75 1.75 0 0 1 0 13.25V1.75a.75.75 0 0 1 1.5 0v11.5c0 .138.112.25.25.25Zm12.03-9.97a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L7.25 5.62 4.03 8.84a.75.75 0 0 1-1.06-1.06l3.75-3.75a.75.75 0 0 1 1.06 0L10 6.25l2.72-2.72a.75.75 0 0 1 1.06 0Z',
   search: 'M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z',
+  pencil: 'M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z',
   x: 'M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z',
   // Phosphor Icons v2.1.1 (MIT, github.com/phosphor-icons/core), "calendar-dots"
   // regular weight, 256px grid: Octicons' calendar has no date grid.
@@ -637,6 +676,11 @@ let liveTurn = 0;
 const miniMetrics = { 1:'ma', 2:'ma', 3:'ma', 4:'ma', 5:'ma', 6:'ma' };
 const envHistory = [];
 const ENV_WINDOW_MS = 5 * 60 * 1000;
+// The sidebar power graph covers the same time as the environment graph, in
+// readings (one per 10 ms). Every port's first fetch is this long, so the total
+// can be summed from the port history.
+const POWER_READINGS = ENV_WINDOW_MS / 10;
+let lastTotal = null;   // the hub's total draw from the last status: { ma, mw }
 let lastEnv = null;
 let envHistoryLoaded = false;
 let envHistoryLoading = false;
@@ -850,7 +894,8 @@ async function histBackfill(n) {
 // ---- Live updates -----------------------------------------------------------
 // Five times a second: new readings for the graph port, and for one other
 // port's mini graph per round. Then carry on filling in the graph port's older
-// history, and redraw.
+// history, and redraw. Each port is fetched at least once, even when off, so the
+// power graph's total includes what it drew before it was switched off.
 function startLiveLoop() {
   if (liveOn) return;
   liveOn = true;
@@ -869,14 +914,15 @@ async function liveTick(gen) {
   liveTimer = null;
   if (gen !== liveGen) return;
   if (graphPort) await histUpdate(graphPort);
-  const others = [1, 2, 3, 4, 5, 6].filter((n) => n !== graphPort && portEnabled(n));
-  if (others.length) await histUpdate(others[liveTurn++ % others.length], MINI_READINGS);
+  const others = [1, 2, 3, 4, 5, 6].filter((n) => n !== graphPort && (portEnabled(n) || !hist[n]));
+  if (others.length) await histUpdate(others[liveTurn++ % others.length], POWER_READINGS);
   if (gen !== liveGen) return;
   if (graphPort) {
     histBackfill(graphPort);
     drawGraph();
   }
   drawMiniGraphs();
+  drawPowerGraph();
   liveTimer = setTimeout(() => liveTick(gen), 200);
 }
 
@@ -2302,7 +2348,7 @@ function togglePower(n) {
   const c = $('port-' + n);
   if (c) {
     c.className = 'socket st-wait' + (n === selectedPort ? ' selected' : '');
-    c.querySelector('.slot').style.background = '';
+    slotFill(c).style.opacity = '';
   }
   fetch('/api/port?n=' + n + '&on=' + (on ? 1 : 0), { method: 'POST' })
     .then((r) => r.json())
@@ -2670,14 +2716,14 @@ function buildPorts(n) {
     c.title = 'Port ' + i + ' — click for schedule';
     c.onclick = () => selectPort(i);
     c.innerHTML =
-      '<div class="sock-head"><span class="sock-num">' + i + '</span>' +
+      '<div class="sock-head"><span class="sock-num" title="Find — flash this port\'s LED"' +
+          ' onclick="event.stopPropagation(); identifyPort(' + i + ')">' +
+          '<span class="num-n">' + i + '</span><span class="num-icon">' + ic('search') + '</span></span>' +
+        '<span class="name-wrap"><span class="name-edit">' + ic('pencil') + '</span>' +
         '<input class="sock-name" type="text" maxlength="24" placeholder="Port" title="Rename port"' +
           ' onclick="event.stopPropagation()" onfocus="beginPortNameEdit(this)"' +
-          ' onkeydown="portNameKey(this,event)" onblur="savePortName(' + i + ',this)"></div>' +
-      '<button class="sock-find" title="Find — flash this port\'s LED" onclick="event.stopPropagation(); identifyPort(' + i + ')">' +
-        ic('search') + '</button>' +
-      '<div class="slot"></div>' +
-      '<div class="sock-state">--</div>' +
+          ' onkeydown="portNameKey(this,event)" onblur="savePortName(' + i + ',this)"></span></div>' +
+      '<div class="slot"><span class="slot-fill"></span><span class="slot-word">--</span></div>' +
       '<div class="port-toggle" onclick="event.stopPropagation(); togglePower(' + i + ')"><span class="toggle-knob"></span></div>' +
       '<div class="sock-read">' +
         '<div class="sock-amps"><span class="mma">--</span> <small>mA</small></div>' +
@@ -2701,31 +2747,32 @@ function orderPorts(rev) {
   [...host.children].reverse().forEach((c) => host.appendChild(c));
 }
 
-// What each LED state means, in words, under the port number.
-const STATE_LABEL = { off:'Off', blue:'No power', green:'Active', pulse:'No device', fault:'Fault', pink:'No 5V', pinkpulse:'No 5V' };
+// What each LED state means, in words, inside the status block.
+const STATE_LABEL = { off:'Off', blue:'Power Off', green:'Active', pulse:'No device', fault:'Fault', pink:'No 5V', pinkpulse:'No 5V' };
 // States whose slot colour is animated in JS rather than set by CSS.
 const ANIMATED = ['pulse', 'fault', 'pinkpulse'];
 
 // Render one compact trend line inside a port card: the port's newest 10
-// seconds of readings.
+// seconds of readings. Reduced to the graph's width the same way as the large
+// graph (graphPoints()): blocks of readings about a pixel wide, lined up on the
+// capture count so the line doesn't change as it moves along, each drawn as its
+// average with a faint band from its lowest to its highest reading, so spikes
+// still show.
 function drawMiniGraph(n) {
   const c = document.querySelector('#port-' + n + ' .mini-canvas');
   const miniMetric = miniMetrics[n];
   const off = !portEnabled(n);
   const h = hist[n];
-  const pts = [];
-  if (off) pts.push(0, 0);
-  else if (h && h.hi >= 0) {
-    for (let k, cnt = Math.max(h.lo, h.hi - MINI_READINGS + 1); cnt <= h.hi; cnt++) {
-      k = cnt % HIST_SLOTS;
-      const v = h.v[k];
-      if (v !== v) continue;
-      pts.push(miniMetric === 'volts' ? v : (miniMetric === 'ma' ? h.ma[k] : v * h.ma[k]));
-    }
-  }
-  if (!c || pts.length < 2) return;
+  if (!c) return;
   const dpr = window.devicePixelRatio || 1;
   const w = Math.max(80, c.clientWidth), ht = Math.max(28, c.clientHeight);
+  const m = miniMetric === 'volts' ? 'v' : (miniMetric === 'ma' ? 'i' : 'p');
+  let pts = null;
+  if (!off) {
+    if (!h || h.hi < 0) return;
+    pts = graphPoints(h, Math.max(h.lo, h.hi - MINI_READINGS + 1), h.hi, w, null);
+    if (pts.n < 2) return;
+  }
   c.width = Math.round(w * dpr); c.height = Math.round(ht * dpr);
   const ctx = c.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2734,10 +2781,12 @@ function drawMiniGraph(n) {
   const line = off ? cs.getPropertyValue('--text-muted').trim() : cs.getPropertyValue(metricColor(miniMetric)).trim();
   const grid = cs.getPropertyValue('--border-soft').trim();
   let min = Infinity, max = -Infinity;
-  pts.forEach((v) => {
-    min = Math.min(min, v);
-    max = Math.max(max, v);
-  });
+  if (pts) {
+    for (let k = 0; k < pts.n; k++) {
+      min = Math.min(min, pts.dense ? pts[m + 'Lo'][k] : pts[m][k]);
+      max = Math.max(max, pts.dense ? pts[m + 'Hi'][k] : pts[m][k]);
+    }
+  }
   if (off) { min = 0; max = miniMetric === 'volts' ? 5 : 1; }
   if (min >= 0) min = 0;
   // A minimum top, so a tiny reading (a fraction of a mA or mW) draws as a low
@@ -2755,16 +2804,31 @@ function drawMiniGraph(n) {
   ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, ht - 1); ctx.lineTo(w, ht - 1); ctx.stroke();
   // The line is drawn below the labels' row, so it never runs through them.
   const top = MINI_LABEL_H, bottom = ht - 2;
-  ctx.strokeStyle = line; ctx.lineWidth = 1.5; ctx.beginPath();
-  pts.forEach((v, i) => {
-    const x = w * i / (pts.length - 1);
-    const y = bottom - (bottom - top) * ((v - min) / (max - min));
-    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-  });
+  const yOf = (v) => bottom - (bottom - top) * ((v - min) / (max - min));
+  ctx.strokeStyle = line;
+  if (pts && pts.dense) {
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = Math.max(1, w / Math.max(1, pts.n));
+    ctx.beginPath();
+    for (let k = 0; k < pts.n; k++) {
+      ctx.moveTo(pts.x[k], yOf(pts[m + 'Hi'][k]) - 0.5); ctx.lineTo(pts.x[k], yOf(pts[m + 'Lo'][k]) + 0.5);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  ctx.lineWidth = 1.5; ctx.beginPath();
+  if (!pts) { ctx.moveTo(0, yOf(0)); ctx.lineTo(w, yOf(0)); }
+  else {
+    for (let k = 0; k < pts.n; k++) {
+      if (pts.brk[k]) ctx.moveTo(pts.x[k], yOf(pts[m][k])); else ctx.lineTo(pts.x[k], yOf(pts[m][k]));
+    }
+  }
   ctx.stroke();
   ctx.fillStyle = line;
   ctx.font = '9px system-ui';
   ctx.fillText(metricLabel(miniMetric), 3, 9);
+  // The scale's top, in grey so it doesn't read as a reading.
+  ctx.fillStyle = cs.getPropertyValue('--text-muted').trim();
   ctx.textAlign = 'right';
   ctx.fillText(metricDigits(miniMetric, max), w - 3, 9);
   ctx.textAlign = 'left';
@@ -2868,7 +2932,7 @@ function drawEnvLane(ctx, pts, key, y0, h, w, now, color, label, labelColor, val
   ctx.fillStyle = valueColor;
   ctx.fillText(envValue(key), 3 + labelW, y0 + 9);
   ctx.font = '9px system-ui';
-  ctx.fillStyle = color;
+  ctx.fillStyle = labelColor;   // scale values in grey, not the line's colour
   ctx.textAlign = 'right';
   ctx.fillText(envDigits(key, max), w - 3, y0 + 9);
   ctx.fillText(envDigits(key, min), w - 3, y0 + h - 3);
@@ -2937,13 +3001,127 @@ function drawEnvGraph() {
   drawEnvLane(ctx, envHistory, 'humid', h / 2, h / 2, w, now, green, 'Humidity', muted, text);
 }
 
+// ---- Sidebar power graph -----------------------------------------------------
+// Total current and power of all six ports over the environment graph's time,
+// summed from the port history the browser holds. Drawn with whatever there
+// is: after a restart, less than the full window.
+function fmtTotalMa(a) { return a >= 1000 ? (a / 1000).toFixed(2) + ' A' : a.toFixed(1) + ' mA'; }
+function fmtTotalMw(w) { return w >= 1000 ? (w / 1000).toFixed(2) + ' W' : w.toFixed(0) + ' mW'; }
+// The total for each pixel column, as { t, ma, mw }, oldest first. Empty until
+// every port that's on has history.
+function powerPoints(cols) {
+  const on = [1, 2, 3, 4, 5, 6].filter((n) => portEnabled(n));
+  if (on.some((n) => !hist[n] || hist[n].hi < 0)) return [];
+  // The newest count every port that's on has reached. With none on, the
+  // newest count any port has, carried forward to now.
+  let newest = on.length ? Math.min(...on.map((n) => hist[n].hi)) : -1;
+  if (!on.length) {
+    Object.values(hist).forEach((h) => {
+      if (h.hi >= 0) newest = Math.max(newest, h.hi + Math.floor((Date.now() - h.wallAt) / 10));
+    });
+  }
+  if (newest < 0) return [];
+  const first = Math.max(0, newest - POWER_READINGS + 1);
+  // Blocks of a whole number of readings, lined up on the capture count (as
+  // graphPoints()), so a block holds the same readings from one draw to the
+  // next and the line doesn't jump about as it moves along.
+  const per = Math.max(1, Math.ceil(POWER_READINGS / cols)), now = Date.now(), pts = [];
+  for (let blk = Math.floor(first / per); blk * per <= newest; blk++) {
+    const a = Math.max(first, blk * per), b = Math.min(newest, blk * per + per - 1);
+    let ma = 0, mw = 0, maHi = 0, mwHi = 0;
+    for (let c = a; c <= b; c++) {
+      const k = c % HIST_SLOTS;
+      let tma = 0, tmw = 0;   // the total at this one reading
+      for (let n = 1; n <= 6; n++) {
+        const h = hist[n];
+        if (!h || c < h.lo || c > h.hi) continue;
+        const i = h.ma[k];
+        if (i === i) { tma += i; tmw += i * h.v[k]; }
+      }
+      ma += tma; mw += tmw;
+      if (tma > maHi) maHi = tma;
+      if (tmw > mwHi) mwHi = tmw;
+    }
+    const len = b - a + 1;
+    // maHi/mwHi: the block's highest single total, which sets the scale. It
+    // only changes when a higher reading arrives or that reading leaves the
+    // graph, so the scale doesn't move as the newest block fills.
+    pts.push({ t:now - (newest - (blk * per + (per - 1) / 2)) * 10, ma:ma / len, mw:mw / len, maHi:maHi, mwHi:mwHi });
+  }
+  return pts;
+}
+// Draw one lane of the power graph: the line from 0 to a rounded top.
+function drawPowerLane(ctx, pts, key, y0, h, w, now, color, label, value, labelColor, valueColor) {
+  let max = MINI_MIN_TOP[key];
+  pts.forEach((p) => { if (p[key + 'Hi'] > max) max = p[key + 'Hi']; });
+  const step = niceStep(max / 4);
+  max = Math.ceil(max / step) * step;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const age = Math.max(0, Math.min(ENV_WINDOW_MS, now - p.t));
+    const x = w * (1 - age / ENV_WINDOW_MS);
+    const pos = Math.max(0, Math.min(1, p[key] / max));
+    const y = y0 + h - 2 - (h - 10) * pos;
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+  ctx.font = '10.5px system-ui';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = labelColor;
+  ctx.fillText(label, 3, y0 + 9);
+  const labelW = ctx.measureText(label + ' ').width;
+  ctx.font = '10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+  ctx.fillStyle = valueColor;
+  ctx.fillText(value, 3 + labelW, y0 + 9);
+  ctx.font = '9px system-ui';
+  ctx.fillStyle = labelColor;   // scale values in grey, not the line's colour
+  ctx.textAlign = 'right';
+  ctx.fillText(key === 'ma' ? fmtTotalMa(max) : fmtTotalMw(max), w - 3, y0 + 9);
+  ctx.fillText('0', w - 3, y0 + h - 3);
+  ctx.textAlign = 'left';
+}
+// Render the sidebar power graph: total current above, total power below.
+function drawPowerGraph() {
+  const c = $('power-canvas');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(120, c.clientWidth), h = Math.max(75, c.clientHeight);
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const cs = getComputedStyle(document.body);
+  const grid = cs.getPropertyValue('--border-soft').trim();
+  const reticule = cs.getPropertyValue('--border').trim();
+  const text = cs.getPropertyValue('--text').trim();
+  const muted = cs.getPropertyValue('--text-muted').trim();
+  ctx.strokeStyle = grid; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, Math.floor(h / 2) + .5); ctx.lineTo(w, Math.floor(h / 2) + .5); ctx.stroke();
+  const pts = powerPoints(Math.round(w));
+  if (!pts.length) return;
+  const now = Date.now();
+  drawEnvReticule(ctx, w, h, now, reticule);
+  drawPowerLane(ctx, pts, 'ma', 0, h / 2, w, now, cs.getPropertyValue(metricColor('ma')).trim(), 'Current',
+    lastTotal ? fmtTotalMa(lastTotal.ma) : '--', muted, text);
+  drawPowerLane(ctx, pts, 'mw', h / 2, h / 2, w, now, cs.getPropertyValue(metricColor('mw')).trim(), 'Power',
+    lastTotal ? fmtTotalMw(lastTotal.mw) : '--', muted, text);
+}
+
+// Show a port name at full size if it fits the card, otherwise 1pt smaller.
+// If it still doesn't fit, the ellipsis shows.
+function fitName(el) {
+  el.classList.remove('small');
+  if (el.scrollWidth > el.clientWidth) el.classList.add('small');
+}
 // Refresh one socket from its entry in the status reply.
 function updatePort(p) {
   const c = $('port-' + p.n);
   if (!c) return;
   if (inflight.has(p.n)) return;   // waiting on this port's own switch result — hold
   c.className = 'socket st-' + p.state + (p.n === selectedPort ? ' selected' : '') + (p.n === graphPort ? ' graphing' : '');
-  if (!ANIMATED.includes(p.state)) c.querySelector('.slot').style.background = '';
+  if (!ANIMATED.includes(p.state)) slotFill(c).style.opacity = '';
   const nameBtn = c.querySelector('.sock-name');
   const portName = (p.name || '').trim();
   if (!nameBtn.dataset.editing && !nameBtn.dataset.saving) {
@@ -2951,14 +3129,17 @@ function updatePort(p) {
     nameBtn.dataset.saved = portName;
   }
   nameBtn.classList.toggle('named', !!portName);
+  fitName(nameBtn);
   nameBtn.title = portName ? 'Rename ' + portName : 'Rename port';
-  c.querySelector('.sock-state').textContent = STATE_LABEL[p.state] || p.state;
+  c.querySelector('.slot-word').textContent = STATE_LABEL[p.state] || p.state;
   c.querySelector('.port-toggle').className = 'port-toggle' + (p.enabled ? ' on' : '');
 
   const mon = p.mon !== false;      // false = this port's power monitor isn't fitted
   c.querySelector('.mma').textContent = mon ? p.ma.toFixed(1) : '--';
-  c.querySelector('.mv').textContent  = mon ? p.v.toFixed(3) + ' V' : '-- V';
-  c.querySelector('.mmw').textContent = mon ? p.mw.toFixed(1) + ' mW' : '-- mW';
+  // Volts to 2 places, and power in W from 1000 mW, so the line fits the card.
+  c.querySelector('.mv').textContent  = mon ? p.v.toFixed(2) + ' V' : '-- V';
+  c.querySelector('.mmw').textContent = !mon ? '-- mW' :
+    (p.mw >= 1000 ? (p.mw / 1000).toFixed(2) + ' W' : p.mw.toFixed(1) + ' mW');
 
   // Next scheduled change, readable without opening the port.
   const s = c.querySelector('.sock-sched');
@@ -3003,11 +3184,7 @@ function applyStatus(d) {
   pushEnvPoint(d.temp);
   $('s-heap').textContent   = d.heap ? Math.round(d.heap/1024) + ' KB' : '--';
   $('s-maxblk').textContent = d.maxblk ? Math.round(d.maxblk/1024) + ' KB' : '--';
-  if (d.total) {
-    const a = d.total.ma, w = d.total.mw;
-    $('s-total').textContent = (a >= 1000 ? (a/1000).toFixed(4) + ' A' : a.toFixed(1) + ' mA') +
-                               ' / ' + (w >= 1000 ? (w/1000).toFixed(4) + ' W' : w.toFixed(1) + ' mW');
-  }
+  if (d.total) lastTotal = d.total;
   if (d.clock) {
     lastClock = d.clock;
     $('s-time').textContent = d.clock.synced ? fmtClock(d.clock.time, d.time_24h !== false) : '--:--';
@@ -3084,34 +3261,37 @@ async function poll() {
 // Pulse and flash the slots from ONE clock so every port stays in phase, the
 // way the device drives all its LEDs off one millis(). Same shapes as
 // renderLeds(): pulse = 2 s sine from 10% to 100%; fault = 250 ms on / off.
+// A card's status block colour layer.
+const slotFill = (c) => c.querySelector('.slot-fill');
 function animate(t) {
   const ph = (t % 2000) / 2000;
   const f = (Math.sin(ph * 2 * Math.PI - Math.PI / 2) + 1) / 2;   // 0..1
   const a = (0.1 + 0.9 * f).toFixed(3);
-  const lit = (rgb, alpha) => 'linear-gradient(rgba(' + rgb + ',' + alpha + '),rgba(' + rgb + ',' + alpha + ')),var(--slot-off)';
-  const fill = {
-    pulse:     lit('0,34,255', a),
-    pinkpulse: lit('255,90,200', a),
-    fault:     (Math.floor(t / 250) % 2 === 0) ? lit('255,0,0', 1) : 'var(--slot-off)',
-  };
+  // How much of the status block's colour shows: pulses fade it, a fault flashes it.
+  const shown = { pulse:a, pinkpulse:a, fault:(Math.floor(t / 250) % 2 === 0) ? '1' : '0' };
   ANIMATED.forEach((st) => {
-    document.querySelectorAll('.st-' + st + ' .slot').forEach((s) => { s.style.background = fill[st]; });
+    document.querySelectorAll('.st-' + st + ' .slot-fill').forEach((s) => { s.style.opacity = shown[st]; });
   });
-  // Identifying overrides the port's state, as it does on the hub.
+  // Identifying overrides the port's state, as it does on the hub: the block
+  // flashes white.
   Object.keys(identifyAt).forEach((n) => {
-    const s = document.querySelector('#port-' + n + ' .slot');
+    const c = $('port-' + n);
+    const s = c && c.querySelector('.slot');
     const dt = t - identifyAt[n];
     if (dt >= IDENTIFY_MS) {
       delete identifyAt[n];
-      if (s) s.style.background = '';
+      if (s) s.classList.remove('identify');
       const p = lastPorts.find((x) => x.n === +n);
       if (p) updatePort(p);
-    } else if (s) s.style.background = (Math.floor(dt / 250) % 2 === 0) ? lit('255,255,255', 1) : 'var(--slot-off)';
+    } else if (s) s.classList.toggle('identify', Math.floor(dt / 250) % 2 === 0);
   });
   requestAnimationFrame(animate);
 }
 requestAnimationFrame(animate);
-window.addEventListener('resize', () => { drawGraph(); drawMiniGraphs(); drawEnvGraph(); });
+window.addEventListener('resize', () => {
+  drawGraph(); drawMiniGraphs(); drawEnvGraph(); drawPowerGraph();
+  document.querySelectorAll('.sock-name').forEach(fitName);
+});
 
 try { if (localStorage.getItem('hubView') === 'history') viewMode = 'history'; } catch (e) {}
 renderPortView();
