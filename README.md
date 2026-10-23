@@ -43,6 +43,13 @@ and fault status help you see why it isn't behaving as expected.
 | Buttons | IO48 user button · IO0 / Boot · Reset |
 | Case size | 90 mm × 64 mm × 19 mm |
 
+## Web interface
+
+<p>
+  <img src="images/web-history.jpg" alt="Web interface: a port's history graph" width="49%">
+  <img src="images/web-schedule.jpg" alt="Web interface: a port's schedule" width="49%">
+</p>
+
 ## It's open source
 
 Smart USB Hub is fully open source, so you can see exactly how it works, tweak
