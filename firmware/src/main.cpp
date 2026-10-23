@@ -1567,6 +1567,10 @@ void setup()
     g_i2cMutex = xSemaphoreCreateRecursiveMutex();
 
     Serial.begin(115200);
+    // Don't wait on serial when nothing's reading it. A blocked print while
+    // loop() holds SettingsLock stalls the web server long enough to trip
+    // AsyncTCP's 5 s task watchdog.
+    Serial.setTxTimeoutMs(0);
     // Reported first: the reset reason survives the reset, so this shows a
     // brownout or crash even when a restart loop is too quick to catch.
     Serial.printf("[boot] reset reason: %d (%s)\r\n", (int)esp_reset_reason(), resetReasonStr(esp_reset_reason()));
