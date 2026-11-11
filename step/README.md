@@ -6,17 +6,31 @@ Most CAD tools open STEP files directly.
 | File | What it is |
 |---|---|
 | `UM 6 Port USB HUB R3.step` | The R3 board — use it to design your own case or mount |
-| `CASE/USB 6 Port Smart Hub Case Top.step` | Case top |
-| `CASE/USB 6 Port Smart Hub Case Bottom.step` | Case bottom |
-| `CASE/Light_Pipe_Insert.dxf` | Light pipe insert that carries each port's RGB LED through the case |
+| `CASE V2/USB 6 Port Smart Hub Case Top V2.step` | Case top, V2 |
+| `CASE V2/USB 6 Port Smart Hub Case Bottom V2.step` | Case bottom, V2 |
+| `CASE V2/Light_Pipe_Insert.dxf` | Light pipe insert that carries each port's RGB LED through the case |
+| `CASE/` | The original case, with the same three files |
 
 The KiCad project for the board is in [`../hardware`](../hardware/).
+
+## Case V2
+
+V2 is easier to print and goes together better than the original case:
+
+- **No supports needed.** Both parts print without supports.
+- **Light pipe guides.** The top has guides that hold the acrylic light pipes
+  in place and keep them straight, so they no longer need to be glued.
+- **Better PCB fit.** The bottom has extra support for the PCB, and more
+  tolerance for the board outline. JLCPCB's routing isn't always consistently
+  accurate, so the extra room lets everything fit together nicely.
+
+The light pipe insert is unchanged from the original.
 
 ## Printing your own case
 
 The case from the [Unexpected Maker store](https://unexpectedmaker.com/shop/smarthub)
 is 3D printed in matt black ABS. Print the top and bottom from the STEP files
-in `CASE/`.
+in `CASE V2/`.
 
 ### Light pipe insert
 
