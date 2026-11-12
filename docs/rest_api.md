@@ -186,7 +186,8 @@ curl http://192.168.1.100/api/hub
     "ip": "192.168.1.100",
     "ssid": "MyNetwork",
     "rssi": -54,
-    "hostname": "usb-hub"
+    "hostname": "usb-hub",
+    "mac": "AA:BB:CC:DD:EE:FF"
   },
   "devices": {
     "expander": true,
@@ -210,7 +211,7 @@ When the clock hasn't synced and WiFi is down, the same request returns:
   "power": { "main_5v": true, "upstream_5v": false, "total_ma": 0.0, "total_mw": 0.0 },
   "sensors": { "temp_c": 0.0, "humidity": 0.0, "valid": false },
   "clock": { "synced": false, "iso": "", "time": "", "date": "", "wday": 0, "secs": 0, "utc_offset": 10 },
-  "network": { "connected": false, "ip": "", "ssid": "MyNetwork", "rssi": 0, "hostname": "usb-hub" },
+  "network": { "connected": false, "ip": "", "ssid": "MyNetwork", "rssi": 0, "hostname": "usb-hub", "mac": "AA:BB:CC:DD:EE:FF" },
   "devices": { "expander": true, "ina_1": true, "ina_2": true, "aht20": true },
   "memory": { "heap_free": 231044, "heap_max_block": 163828 },
   "ports_summary": { "count": 6, "powered": 0, "occupied": 0, "faulted": 0 }
@@ -233,6 +234,8 @@ When the clock hasn't synced and WiFi is down, the same request returns:
 - `network.hostname` — the `device.hostname` setting, lower-cased and stripped
   of anything that isn't a letter, digit or `-`. The hub answers at
   `<hostname>.local`.
+- `network.mac` — the WiFi station MAC address, upper-case and colon-separated.
+  Filled in even while WiFi is down.
 - `devices.*` — I2C presence. A `false` here explains why the related readings
   are missing rather than zero.
 - `reset_reason` — why the **previous** boot ended: `POWERON`, `SW` (software restart, including after an OTA update), `USB`
