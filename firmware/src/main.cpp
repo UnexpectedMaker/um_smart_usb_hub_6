@@ -1191,6 +1191,9 @@ void startOTA()
     ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] error %u\r\n", e); });
     ArduinoOTA.begin();
     MDNS.addService("http", "tcp", 80); // advertise the web UI as well
+    // TXT records so discovery tools can identify the device
+    MDNS.addServiceTxt("http", "tcp", "vendor", "unexpectedmaker");
+    MDNS.addServiceTxt("http", "tcp", "model", "smart-usb-hub");
     Serial.printf("[ota] ready — http://%s.local/\r\n", g_device.hostname().c_str());
 }
 
