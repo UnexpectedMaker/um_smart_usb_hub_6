@@ -269,7 +269,7 @@ std::vector<HubSettingField> WiFiSettings::uiSchema()
 {
     return {
         {.type = F::T::String, .key = "ssid", .label = "SSID"},
-        {.type = F::T::String, .key = "password", .label = "Password"},
+        {.type = F::T::String, .key = "password", .label = "Password", .secret = true},
         {.type = F::T::Bool, .key = "dhcp", .label = "DHCP",
          .help = "Off = use the static address below. DNS goes to the gateway."},
         {.type = F::T::String, .key = "ip", .label = "Static IP"},

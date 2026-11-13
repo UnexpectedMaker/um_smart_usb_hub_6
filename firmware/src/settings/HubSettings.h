@@ -73,7 +73,7 @@ struct HubSettingField
     {
         Bool,      // on/off button
         Int,       // number box, bounded by min/max, stepping by step
-        String,    // text box (masked automatically if the key looks secret)
+        String,    // text box (masked if `secret` is set)
         Choice,    // one value from a fixed list, shown as segmented buttons
         PortBools  // one on/off button per port, numbered 1-6. With `value` set,
                    // a button is on when that port's entry equals `value`
@@ -87,6 +87,9 @@ struct HubSettingField
     const char *help = nullptr; // optional one-line hint shown under the field
     const char *value = nullptr;   // PortBools only: the entry an "on" button stands for
     const char *options = nullptr; // Choice only: comma-separated values
+    // String only: write-only. The settings API never sends its value back
+    // (only whether one is set), and the UI only posts it when it's edited.
+    bool secret = false;
 };
 
 class HubConfig;

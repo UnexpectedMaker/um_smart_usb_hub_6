@@ -62,7 +62,6 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
     g["label"] = m->label();
     nlohmann::json values;
     m->toJson(values);
-    g["values"] = values;
 
     nlohmann::json fields = nlohmann::json::array();
     for (auto &f : m->uiSchema())
@@ -83,8 +82,18 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
             fj["value"] = f.value;
         if (f.type == HubSettingField::T::Choice)
             fj["options"] = optionListJson(f.options);
+        if (f.secret)
+        {
+            // Never send a secret back out, only whether one is stored.
+            auto it = values.find(f.key);
+            fj["secret"] = true;
+            fj["set"] = it != values.end() && it->is_string() && !it->get<std::string>().empty();
+            if (it != values.end())
+                values.erase(it);
+        }
         fields.push_back(fj);
     }
+    g["values"] = values; // after the loop, which strips secret values
     g["fields"] = fields;
     return g;
 }
