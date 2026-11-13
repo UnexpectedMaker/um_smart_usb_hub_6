@@ -1554,7 +1554,9 @@ void processSerial()
             line += c;
             Serial.write(c);
         }
-        Serial.flush(); // send the echo now rather than when the buffer fills
+        // No Serial.flush() here: the USB interrupt sends the echo as soon as
+        // it's queued, and with the zero timeout below flush() throws away
+        // everything still queued instead of waiting for it.
     }
 }
 
@@ -1573,7 +1575,8 @@ void setup()
     Serial.begin(115200);
     // Don't wait on serial when nothing's reading it. A blocked print while
     // loop() holds SettingsLock stalls the web server long enough to trip
-    // AsyncTCP's 5 s task watchdog.
+    // AsyncTCP's 5 s task watchdog. Never call Serial.flush() with this: at
+    // a zero timeout it discards the queued output.
     Serial.setTxTimeoutMs(0);
     // Reported first: the reset reason survives the reset, so this shows a
     // brownout or crash even when a restart loop is too quick to catch.
