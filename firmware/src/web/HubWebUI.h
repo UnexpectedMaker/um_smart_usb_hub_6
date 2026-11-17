@@ -2452,8 +2452,9 @@ function cfgMsg(text, bad) {
 
 // Escape text for use inside HTML or an attribute value.
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-// Fields that must never be shown as plain text until asked.
-const isSecret = (k) => /pass|secret|api_key|token/i.test(k);
+// Fields that must never be shown as plain text until asked. Fields the hub
+// marks secret are also write-only: their value is never sent to the page.
+const isSecret = (f) => !!f.secret || /pass|secret|api_key|token/i.test(f.key);
 
 // One section per settings group.
 function renderSettings(groups) {
@@ -2532,9 +2533,17 @@ function cfgRow(g, f) {
     ctl = '<input class="cfg-in num" type="number" id="' + id + '" data-key="' + esc(f.key) + '"' +
       ' value="' + (v != null ? v : 0) + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '">';
   } else {
-    const secret = isSecret(f.key);
+    const secret = isSecret(f);
+    // A write-only field starts empty and is only sent once it's edited, so
+    // saving the drawer leaves the stored value alone.
+    const writeOnly = !!f.secret;
     ctl = '<input class="cfg-in' + (secret ? ' secret' : '') + '" type="' + (secret ? 'password' : 'text') + '" id="' + id + '"' +
-      ' data-key="' + esc(f.key) + '" value="' + esc(v) + '" autocomplete="off">' +
+      ' data-key="' + esc(f.key) + '"' +
+      (writeOnly
+        ? ' value="" data-write-only="1" oninput="this.dataset.edited=1"' +
+          ' placeholder="' + (f.set ? 'Saved, type to change' : 'Not set') + '"'
+        : ' value="' + esc(v) + '"') +
+      ' autocomplete="' + (secret ? 'new-password' : 'off') + '">' +
       (secret ? '<button type="button" class="cfg-eye" title="Show / hide" onclick="reveal(\'' + id + '\', this)">' +
                 ic('eye') + '</button>' : '');
   }
@@ -2588,6 +2597,7 @@ async function saveAllSettings() {
     const out = {};
     sec.querySelectorAll('[data-key]').forEach((el) => {
       const k = el.dataset.key;
+      if (el.dataset.writeOnly && !el.dataset.edited) return; // keep the stored value
       if (el.dataset.ports !== undefined) {
         const bools = [...el.querySelectorAll('.port-bool')].map((b) => b.dataset.bool === '1');
         if (el.dataset.value) {

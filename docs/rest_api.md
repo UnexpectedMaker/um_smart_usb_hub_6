@@ -889,7 +889,6 @@ curl http://192.168.1.100/api/settings/schema
       "label": "WiFi",
       "values": {
         "ssid": "MyNetwork",
-        "password": "hunter2",
         "dhcp": true,
         "ip": "",
         "gateway": "",
@@ -897,7 +896,8 @@ curl http://192.168.1.100/api/settings/schema
       },
       "fields": [
         { "type": "string", "key": "ssid", "label": "SSID" },
-        { "type": "string", "key": "password", "label": "Password" },
+        { "type": "string", "key": "password", "label": "Password",
+          "secret": true, "set": true },
         { "type": "bool", "key": "dhcp", "label": "DHCP",
           "help": "Off = use the static address below. DNS goes to the gateway." },
         { "type": "string", "key": "ip", "label": "Static IP" },
@@ -976,8 +976,9 @@ curl http://192.168.1.100/api/settings/schema
 
 **Field notes**
 
-- **`values.password` is returned in clear text.** Anything on the LAN can read
-  the WiFi password from this endpoint.
+- A field with `"secret": true` is write-only: its value is left out of
+  `values`, and `set` says whether one is stored. Only `wifi.password` is
+  secret.
 - Field `type` is one of `bool`, `int`, `string`, `choice`, `port_bools`.
   A `choice` field supplies an `options` array. A `port_bools` field is a row
   of six numbered on/off buttons, one per port. With `value`, several rows
@@ -1240,7 +1241,8 @@ curl -X POST http://192.168.1.100/api/settings \
 - `profiler.graph_metric` is a comma-separated subset of `volts`, `ma` and `mw`;
   an empty string hides every trace. Legacy values `combined`, `volts`, `ma`
   and `mw` are still accepted.
-- Keys you leave out keep their current values.
+- Keys you leave out keep their current values. Leave out `wifi.password` to
+  keep the stored password; send `""` to clear it (an open network).
 - Invalid graph preference values are clamped back to defaults. The stored
   values are returned in `/api/status` under `ui`.
 

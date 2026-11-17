@@ -67,9 +67,9 @@ re-reading.
 
 ### Authentication
 
-There is none. Anyone on the network can switch ports, and
-`/api/settings/schema` returns the WiFi password in clear text. Needs a scheme
-(token header or similar) and the password should stop being sent back.
+There is none. Anyone on the network can switch ports or change settings,
+including the WiFi credentials. Needs a scheme (token header or similar). The
+WiFi password is write-only, so it can't be read back.
 
 ### Calls from other web pages (CORS)
 
