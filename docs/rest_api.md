@@ -32,6 +32,24 @@ The API lives on the same address as the web page:
 
 All the examples here use `http://usb-hub.local`. Swap in your own address.
 
+### Finding hubs on the network
+
+Each hub advertises its web page and API over mDNS as an `_http._tcp`
+service, with these TXT records so tools can tell it apart from other web
+devices:
+
+| Key      | Value             |
+|----------|-------------------|
+| `vendor` | `unexpectedmaker` |
+| `model`  | `smart-usb-hub`   |
+
+For example, on macOS:
+
+```sh
+dns-sd -B _http._tcp local.              # list HTTP services
+dns-sd -L usb-hub _http._tcp local.      # show one hub's TXT records
+```
+
 ### No key or login
 
 There's no authentication: like the web page, the API is open to anything on
