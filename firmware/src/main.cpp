@@ -1149,7 +1149,8 @@ String apiHubJson()
     j += ",\"ip\":\"" + (up ? WiFi.localIP().toString() : String()) + "\"";
     j += ",\"ssid\":\"" + jsonEsc(g_wifi.config().ssid) + "\"";
     j += ",\"rssi\":" + String(up ? WiFi.RSSI() : 0);
-    j += ",\"hostname\":\"" + g_device.hostname() + "\"}";
+    j += ",\"hostname\":\"" + g_device.hostname() + "\"";
+    j += ",\"mac\":\"" + WiFi.macAddress() + "\"}";
     j += ",\"devices\":{\"expander\":" + String(jb(expanderConnected()));
     j += ",\"ina_1\":" + String(jb(g_inaAok));
     j += ",\"ina_2\":" + String(jb(g_inaBok));
