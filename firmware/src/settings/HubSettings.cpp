@@ -225,6 +225,8 @@ LocationSettings g_location;
 LedsSettings g_leds;
 PortsSettings g_ports;
 EspHomeSettings g_esphome;
+S3UsbSettings g_s3Usb;
+ButtonSettings g_button;
 WebsiteSettings g_website;
 ProfilerSettings g_profiler;
 SchedulesSettings g_schedules;
@@ -271,10 +273,11 @@ std::vector<HubSettingField> WiFiSettings::uiSchema()
         {.type = F::T::String, .key = "ssid", .label = "SSID"},
         {.type = F::T::String, .key = "password", .label = "Password", .secret = true},
         {.type = F::T::Bool, .key = "dhcp", .label = "DHCP",
-         .help = "Off = use the static address below. DNS goes to the gateway."},
-        {.type = F::T::String, .key = "ip", .label = "Static IP"},
-        {.type = F::T::String, .key = "gateway", .label = "Gateway"},
-        {.type = F::T::String, .key = "subnet", .label = "Subnet mask"},
+         .help = "DHCP Off = use the static address below. DNS goes to the gateway.",
+         .on_label = "DHCP On", .off_label = "DHCP Off"},
+        {.type = F::T::String, .key = "ip", .label = "Static IP", .disabled_by = "dhcp"},
+        {.type = F::T::String, .key = "gateway", .label = "Gateway", .disabled_by = "dhcp"},
+        {.type = F::T::String, .key = "subnet", .label = "Subnet mask", .disabled_by = "dhcp"},
     };
 }
 
@@ -474,6 +477,60 @@ std::vector<HubSettingField> EspHomeSettings::uiSchema()
         {.type = F::T::Bool, .key = "enabled", .label = "ESPHome API",
          .help = "Lets Home Assistant find and control the hub with the ESPHome integration."},
     };
+}
+
+// ===========================================================================
+// s3_usb
+// ===========================================================================
+
+std::vector<HubSettingField> S3UsbSettings::uiSchema()
+{
+    return {
+        {.type = F::T::Bool, .key = "disconnect_on_boot", .label = "Disconnect from hub on boot",
+         .help = "The ESP32-S3 starts disconnected from the hub. Reconnect it with the ESP32-S3 USB button."},
+    };
+}
+
+// ===========================================================================
+// button
+// ===========================================================================
+
+std::vector<HubSettingField> ButtonSettings::uiSchema()
+{
+    return {
+        {.type = F::T::Select, .key = "press", .label = "Single press", .options = BUTTON_ACTIONS,
+         .unique = true},
+        {.type = F::T::Select, .key = "double_press", .label = "Double press",
+         .help = "Two presses within 0.3 secs.", .options = BUTTON_ACTIONS, .unique = true},
+        {.type = F::T::Select, .key = "long_press", .label = "Long press",
+         .help = "Held for 1 second.", .options = BUTTON_ACTIONS, .unique = true},
+    };
+}
+
+// True when action is one of the values in BUTTON_ACTIONS.
+static bool isButtonAction(const String &action)
+{
+    String all = "," BUTTON_ACTIONS;
+    return action.length() && all.indexOf("," + action + ":") >= 0;
+}
+
+void ButtonSettings::fromJson(const nlohmann::json &j)
+{
+    SettingsLock lock;
+    HubSettingsT<HubButtonConfig>::fromJson(j);
+    HubButtonConfig defaults;
+    if (!isButtonAction(_config.press))
+        _config.press = defaults.press;
+    if (!isButtonAction(_config.double_press))
+        _config.double_press = defaults.double_press;
+    if (!isButtonAction(_config.long_press))
+        _config.long_press = defaults.long_press;
+    // One action per kind of press.
+    if (_config.double_press != "none" && _config.double_press == _config.press)
+        _config.double_press = "none";
+    if (_config.long_press != "none" &&
+        (_config.long_press == _config.press || _config.long_press == _config.double_press))
+        _config.long_press = "none";
 }
 
 // ===========================================================================

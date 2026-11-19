@@ -30,6 +30,8 @@
 //   location   g_location   city, UTC offset and NTP server
 //   leds       g_leds       port LED on/off and brightness
 //   ports      g_ports      which ports power up at boot
+//   s3_usb     g_s3Usb      whether the ESP32-S3 disconnects from the hub at boot
+//   button     g_button     what the user button's single, double and long press do
 //   website    g_website    web UI theme
 //   profiler   g_profiler   port profiler options and graph view preferences
 //   schedules  g_schedules  per-port power schedules, plus their validation
@@ -75,6 +77,7 @@ struct HubSettingField
         Int,       // number box, bounded by min/max, stepping by step
         String,    // text box (masked if `secret` is set)
         Choice,    // one value from a fixed list, shown as segmented buttons
+        Select,    // one value from a fixed list, shown as a drop-down
         PortBools  // one on/off button per port, numbered 1-6. With `value` set,
                    // a button is on when that port's entry equals `value`
     };
@@ -86,10 +89,22 @@ struct HubSettingField
     long step = 1;              // Int only
     const char *help = nullptr; // optional one-line hint shown under the field
     const char *value = nullptr;   // PortBools only: the entry an "on" button stands for
-    const char *options = nullptr; // Choice only: comma-separated values
+    // Choice: comma-separated values. Select: comma-separated value:label
+    // pairs, the label being what the drop-down shows.
+    const char *options = nullptr;
     // String only: write-only. The settings API never sends its value back
     // (only whether one is set), and the UI only posts it when it's edited.
     bool secret = false;
+    // Bool only: the button's text when on / off, instead of "On" / "Off".
+    const char *on_label = nullptr;
+    const char *off_label = nullptr;
+    // The key of a Bool field in the same group. While that field is on, this
+    // field is greyed out and can't be edited.
+    const char *disabled_by = nullptr;
+    // Select only: no two unique fields in the group can hold the same value,
+    // except the first option in the list (the "nothing" choice). The UI greys
+    // out options taken by another field; the group's fromJson() enforces it.
+    bool unique = false;
 };
 
 class HubConfig;
@@ -388,6 +403,64 @@ public:
     std::vector<HubSettingField> uiSchema() override;
 };
 extern EspHomeSettings g_esphome;
+
+// ===========================================================================
+// s3_usb — the ESP32-S3's USB connection to the hub (its USB serial/JTAG port,
+// on the CH339W's USB1). Disconnected, an upload meant for another device
+// can't flash it by mistake. The web UI's ESP32-S3 USB button connects and
+// disconnects it while running; this only sets how it starts.
+// ===========================================================================
+struct HubS3UsbConfig
+{
+    bool disconnect_on_boot = false; // false = connected at boot, as before
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubS3UsbConfig, disconnect_on_boot);
+
+class S3UsbSettings : public HubSettingsT<HubS3UsbConfig>
+{
+public:
+    const char *name() const override { return "s3_usb"; }
+    const char *label() const override { return "ESP32-S3 USB"; }
+    std::vector<HubSettingField> uiSchema() override;
+};
+extern S3UsbSettings g_s3Usb;
+
+// ===========================================================================
+// button — what the user button does for a single press, a double press and a
+// long press (detected in main.cpp). Each is one of BUTTON_ACTIONS.
+// ===========================================================================
+// Every action, as value:label pairs for the Settings drop-downs. "none"
+// stays first. To add one, add it here and run it in runButtonAction() in
+// main.cpp. An action can be set on only one kind of press.
+#define BUTTON_ACTIONS "none:Do nothing," \
+                       "toggle_ports:Toggle power state of each port," \
+                       "all_on:All ports on," \
+                       "all_off:All ports off," \
+                       "cycle_ports:Power-cycle powered ports," \
+                       "toggle_leds:Turn port LEDs on / off," \
+                       "toggle_s3_usb:Connect / disconnect S3 USB"
+
+struct HubButtonConfig
+{
+    String press = "toggle_ports"; // single press: what the button has always done
+    String double_press = "none";
+    String long_press = "none";
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(HubButtonConfig, press, double_press, long_press);
+
+class ButtonSettings : public HubSettingsT<HubButtonConfig>
+{
+public:
+    const char *name() const override { return "button"; }
+    const char *label() const override { return "User Button"; }
+    std::vector<HubSettingField> uiSchema() override;
+
+    // Loads as usual, then an action that isn't in BUTTON_ACTIONS goes back
+    // to its default, and an action already set on an earlier press (single,
+    // then double, then long) becomes "none".
+    void fromJson(const nlohmann::json &j) override;
+};
+extern ButtonSettings g_button;
 
 // ===========================================================================
 // website — the web UI's own preferences. Set by the theme button, not the

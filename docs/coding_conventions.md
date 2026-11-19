@@ -274,8 +274,9 @@ curl -X POST http://usb-hub.local/api/settings \
 The hub applies it, saves that group, and calls the group's
 `onConfigChanged()`.
 
-**In the Settings panel.** A bool, number, text field, fixed choice, or row of
-per-port buttons (`PortBools`, like the `power_mode` rows), is shown in the
+**In the Settings panel.** A bool, number, text field, fixed choice
+(segmented buttons, `Choice`, or a drop-down, `Select`), or row of per-port
+buttons (`PortBools`, like the `power_mode` rows), is shown in the
 Settings panel by adding it to the group's `uiSchema()`. Port names aren't
 there — they're edited on the port cards — so they're not in
 `PortsSettings::uiSchema()`.

@@ -75,6 +75,8 @@ temperature, total current draw and more.
 | Switch one port on or off | [`POST /api/port?n=&on=`](#post-apiportn1-6on01) |
 | Switch every port on or off | [`POST /api/hub/ports?on=`](#post-apihubportson01) |
 | Flash a port's LED to find it on the hub | [`POST /api/identify?n=`](#post-apiidentifyn1-6) |
+| Connect or disconnect the ESP32-S3 from the hub | [`POST /api/hub/usbs3?on=`](#post-apihubusbs3on01) |
+| Reboot the hub | [`POST /api/hub/reboot`](#post-apihubreboot) |
 | Set each port's power mode: manual, on at boot, or on while a device is plugged in | [`POST /api/settings`](#post-apisettings) with `{"ports":{"power_mode":[...]}}` |
 | Name the ports | [`POST /api/settings`](#post-apisettings) with `{"ports":{"names":[...]}}` |
 | Change any other setting | [`POST /api/settings`](#post-apisettings) |
@@ -101,7 +103,7 @@ temperature, total current draw and more.
 | Code | Meaning |
 |---|---|
 | `200` | OK |
-| `400` | Missing or unparseable parameter (only `/api/hub/ports` returns this) |
+| `400` | Missing or unparseable parameter (`/api/hub/ports`, `/api/hub/usbs3` and `/api/usbs3` return this) |
 | `404` | Unknown endpoint, or a port outside `1..6` |
 
 ### Error bodies
@@ -151,6 +153,9 @@ apply nothing. See *Current limitations*.
 | `POST` | `/api/theme?value=` | Store the UI theme |
 | `POST` | `/api/location/detect` | Trigger IP geolocation lookup |
 | `POST` | `/api/hub/ports?on=` | Set **all** ports on/off at once |
+| `POST` | `/api/hub/usbs3?on=` | Connect or disconnect the ESP32-S3 from the hub |
+| `POST` | `/api/hub/reboot` | Reboot the hub |
+| `POST` | `/api/usbs3?on=` | Connect or disconnect the ESP32-S3 from the hub (web UI) |
 
 Static assets, also served from flash: `GET /`, `GET /hub.css`, `GET /hub.js`,
 and the icon: `GET /favicon.ico`, `GET /favicon-32.png`, `GET /apple-touch-icon.png`
@@ -213,6 +218,7 @@ curl http://192.168.1.100/api/hub
     "ina_2": true,
     "aht20": true
   },
+  "s3_usb_connected": true,
   "memory": { "heap_free": 209800, "heap_max_block": 163828 },
   "ports_summary": { "count": 6, "powered": 1, "occupied": 0, "faulted": 0 }
 }
@@ -231,6 +237,7 @@ When the clock hasn't synced and WiFi is down, the same request returns:
   "clock": { "synced": false, "iso": "", "time": "", "date": "", "wday": 0, "secs": 0, "utc_offset": 10 },
   "network": { "connected": false, "ip": "", "ssid": "MyNetwork", "rssi": 0, "hostname": "usb-hub", "mac": "AA:BB:CC:DD:EE:FF" },
   "devices": { "expander": true, "ina_1": true, "ina_2": true, "aht20": true },
+  "s3_usb_connected": true,
   "memory": { "heap_free": 231044, "heap_max_block": 163828 },
   "ports_summary": { "count": 6, "powered": 0, "occupied": 0, "faulted": 0 }
 }
@@ -254,6 +261,9 @@ When the clock hasn't synced and WiFi is down, the same request returns:
   `<hostname>.local`.
 - `network.mac` — the WiFi station MAC address, upper-case and colon-separated.
   Filled in even while WiFi is down.
+- `s3_usb_connected` — whether the ESP32-S3 is connected to the hub (its USB
+  serial/JTAG port, on the hub chip's USB1). `false` = disconnected. Set with [`POST /api/hub/usbs3`](#post-apihubusbs3on01); the `s3_usb.disconnect_on_boot`
+  setting decides how it starts.
 - `devices.*` — I2C presence. A `false` here explains why the related readings
   are missing rather than zero.
 - `reset_reason` — why the **previous** boot ended: `POWERON`, `SW` (software restart, including after an OTA update), `USB`
@@ -610,6 +620,7 @@ curl http://192.168.1.100/api/status
   "maxblk": 163828,
   "main5v": true,
   "upstream5v": true,
+  "s3_usb_connected": true,
   "temp": { "valid": true, "c": 30.8, "h": 29.6 },
   "clock": {
     "synced": true,
@@ -920,10 +931,11 @@ curl http://192.168.1.100/api/settings/schema
         { "type": "string", "key": "password", "label": "Password",
           "secret": true, "set": true },
         { "type": "bool", "key": "dhcp", "label": "DHCP",
-          "help": "Off = use the static address below. DNS goes to the gateway." },
-        { "type": "string", "key": "ip", "label": "Static IP" },
-        { "type": "string", "key": "gateway", "label": "Gateway" },
-        { "type": "string", "key": "subnet", "label": "Subnet mask" }
+          "help": "DHCP Off = use the static address below. DNS goes to the gateway.",
+          "on_label": "DHCP On", "off_label": "DHCP Off" },
+        { "type": "string", "key": "ip", "label": "Static IP", "disabled_by": "dhcp" },
+        { "type": "string", "key": "gateway", "label": "Gateway", "disabled_by": "dhcp" },
+        { "type": "string", "key": "subnet", "label": "Subnet mask", "disabled_by": "dhcp" }
       ]
     },
     {
@@ -981,6 +993,54 @@ curl http://192.168.1.100/api/settings/schema
       ]
     },
     {
+      "name": "s3_usb",
+      "label": "ESP32-S3 USB",
+      "values": { "disconnect_on_boot": false },
+      "fields": [
+        { "type": "bool", "key": "disconnect_on_boot", "label": "Disconnect from hub on boot",
+          "help": "The ESP32-S3 starts disconnected from the hub. Reconnect it with the ESP32-S3 USB button." }
+      ]
+    },
+    {
+      "name": "button",
+      "label": "User Button",
+      "values": { "press": "toggle_ports", "double_press": "none", "long_press": "none" },
+      "fields": [
+        { "type": "select", "key": "press", "label": "Single press",
+          "options": [
+            { "value": "none", "label": "Do nothing" },
+            { "value": "toggle_ports", "label": "Toggle power state of each port" },
+            { "value": "all_on", "label": "All ports on" },
+            { "value": "all_off", "label": "All ports off" },
+            { "value": "cycle_ports", "label": "Power-cycle powered ports" },
+            { "value": "toggle_leds", "label": "Turn port LEDs on / off" },
+            { "value": "toggle_s3_usb", "label": "Connect / disconnect S3 USB" }
+          ], "unique": true },
+        { "type": "select", "key": "double_press", "label": "Double press",
+          "help": "Two presses within 0.3 secs.",
+          "options": [
+            { "value": "none", "label": "Do nothing" },
+            { "value": "toggle_ports", "label": "Toggle power state of each port" },
+            { "value": "all_on", "label": "All ports on" },
+            { "value": "all_off", "label": "All ports off" },
+            { "value": "cycle_ports", "label": "Power-cycle powered ports" },
+            { "value": "toggle_leds", "label": "Turn port LEDs on / off" },
+            { "value": "toggle_s3_usb", "label": "Connect / disconnect S3 USB" }
+          ], "unique": true },
+        { "type": "select", "key": "long_press", "label": "Long press",
+          "help": "Held for 1 second.",
+          "options": [
+            { "value": "none", "label": "Do nothing" },
+            { "value": "toggle_ports", "label": "Toggle power state of each port" },
+            { "value": "all_on", "label": "All ports on" },
+            { "value": "all_off", "label": "All ports off" },
+            { "value": "cycle_ports", "label": "Power-cycle powered ports" },
+            { "value": "toggle_leds", "label": "Turn port LEDs on / off" },
+            { "value": "toggle_s3_usb", "label": "Connect / disconnect S3 USB" }
+          ], "unique": true }
+      ]
+    },
+    {
       "name": "profiler",
       "label": "Profiler",
       "values": {
@@ -997,11 +1057,19 @@ curl http://192.168.1.100/api/settings/schema
 
 **Field notes**
 
+- A `bool` field with `on_label` / `off_label` shows that text on its
+  button instead of On / Off.
+- A field with `disabled_by` is greyed out in the Settings panel while the
+  `bool` field it names, in the same group, is on. Its value is still sent
+  and saved as normal.
 - A field with `"secret": true` is write-only: its value is left out of
   `values`, and `set` says whether one is stored. Only `wifi.password` is
   secret.
-- Field `type` is one of `bool`, `int`, `string`, `choice`, `port_bools`.
-  A `choice` field supplies an `options` array. A `port_bools` field is a row
+- Field `type` is one of `bool`, `int`, `string`, `choice`, `select`,
+  `port_bools`. A `choice` field supplies an `options` array. A `select`
+  field is a drop-down: its `options` are `{ "value", "label" }` objects, and
+  the setting stores the `value`. With `"unique": true`, no two such fields
+  in the group can hold the same value, except the first option. A `port_bools` field is a row
   of six numbered on/off buttons, one per port. With `value`, several rows
   share one key: a port's button is on when its entry equals that row's
   `value`. Turning a port on in one row turns the same port off in the others;
@@ -1027,6 +1095,26 @@ curl http://192.168.1.100/api/settings/schema
 - `location.time_24h` only changes the web UI's clock: `false` shows the time
   as 12 hour with AM/PM. `clock.time` is always 24 hour. It's also sent as
   `time_24h` in `/api/status`.
+- `s3_usb.disconnect_on_boot` — `true` starts the ESP32-S3 disconnected from the
+  hub. `false` (the default) starts it connected. Either way,
+  [`POST /api/hub/usbs3`](#post-apihubusbs3on01) changes it while running.
+- `button.press`, `button.double_press` and `button.long_press` — what the
+  user button does for a single press, a double press (two presses within
+  0.3 s) and a long press (held for 1 s):
+  - `"none"` — nothing
+  - `"toggle_ports"` — flips each port to its opposite state
+  - `"all_on"` — switches every port on
+  - `"all_off"` — switches every port off
+  - `"cycle_ports"` — switches the powered ports off, then the same ports
+    back on 1 s later
+  - `"toggle_leds"` — turns the port LEDs on or off (the `leds.enabled`
+    setting, saved)
+  - `"toggle_s3_usb"` — connects or disconnects the ESP32-S3 from the hub
+
+  Defaults: `toggle_ports`, `none`, `none`. An action can be set on only one
+  kind of press: if a save sets the same one twice, the later press (single,
+  then double, then long) becomes `"none"`. A single press only acts once
+  0.3 s have passed without a second press.
 - `ports.reverse_order` only changes the web UI: `true` shows the port cards
   1 to 6 from left to right instead of 6 to 1, the order they sit on the hub.
   It's also sent as `reverse_order` in `/api/status`.
@@ -1067,6 +1155,7 @@ caller sees real device state rather than assuming success:
   "maxblk": 163828,
   "main5v": true,
   "upstream5v": true,
+  "s3_usb_connected": true,
   "temp": { "valid": true, "c": 30.8, "h": 29.6 },
   "clock": { "synced": true, "time": "16:33", "date": "Sun 02 Aug 2026", "wday": 0, "secs": 59621 },
   "ports": [
@@ -1158,9 +1247,58 @@ A missing or unparseable `on` returns `400` and switches nothing:
 { "error": "bad param", "detail": "on must be 0 or 1" }
 ```
 
-> This is **not** the same as the user button, which flips each port to its
-> opposite state — a mixed set stays mixed. This endpoint drives all six to the
-> same state.
+> This is **not** the same as the user button's "Toggle power to all ports",
+> which flips each port to its opposite state — a mixed set stays mixed. This
+> endpoint drives all six to the same state.
+
+---
+
+## POST `/api/hub/usbs3?on=<0|1>`
+
+Connect or disconnect the ESP32-S3 from the hub: its USB serial/JTAG port, on
+the hub chip's USB1, the port the firmware is flashed and monitored through.
+Disconnected, an upload meant for another device can't flash it by mistake.
+Only the S3 is affected: the firmware keeps running, and the six downstream
+ports carry on as before.
+
+Runtime only: after a restart the ESP32-S3 is connected, or disconnected if
+the `s3_usb.disconnect_on_boot` setting is on.
+
+`on` accepts `1`/`0`, `true`/`false` or `on`/`off`.
+
+```
+curl -X POST 'http://192.168.1.100/api/hub/usbs3?on=0'      # disconnect
+curl -X POST 'http://192.168.1.100/api/hub/usbs3?on=1'      # connect
+```
+
+**Returns the same body as [`GET /api/hub`](#get-apihub)**, read back *after*
+the change, with `s3_usb_connected` showing the new state.
+
+A missing or unparseable `on` returns `400` and changes nothing:
+
+```json
+{ "error": "bad param", "detail": "on must be 0 or 1" }
+```
+
+`POST /api/usbs3?on=0|1` does the same for the web UI's ESP32-S3 USB button. It takes
+only `0` or `1`, and returns the `/api/status` body.
+
+---
+
+## POST `/api/hub/reboot`
+
+Reboot the hub. It replies first, then restarts half a second later, and is
+back on the network a few seconds after that.
+
+```
+curl -X POST http://192.168.1.100/api/hub/reboot
+```
+
+```json
+{ "ok": true }
+```
+
+After the restart, `reset_reason` in [`GET /api/hub`](#get-apihub) is `SW`.
 
 ---
 
@@ -1805,10 +1943,9 @@ How the API behaves in firmware 1.0.0. Planned fixes are in
    rejected write from an applied one without re-reading.
 2. **No authentication.** Anyone on the LAN can switch ports, and
    `/api/settings/schema` returns the WiFi password in clear text.
-3. **Few REST setters.** Apart from `/api/hub/ports`, the writes are the ones
+3. **Few REST setters.** Apart from `/api/hub/ports`, `/api/hub/usbs3` and
+   `/api/hub/reboot`, the writes are the ones
    the web UI uses: `/api/port`, `/api/schedules` and `/api/settings` (which
    also sets `power_mode`). There are no per-port REST setters yet.
-4. **No restart endpoint.** Restarting is serial-only (`restart`) — and a
-   hostname change only takes effect after a restart.
-5. **Two schedule representations** (string `mode` vs integer `mode` + `on`)
+4. **Two schedule representations** (string `mode` vs integer `mode` + `on`)
    for the same data.

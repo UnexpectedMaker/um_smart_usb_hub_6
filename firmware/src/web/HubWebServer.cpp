@@ -27,6 +27,7 @@ static const char *fieldTypeStr(HubSettingField::T t)
     case HubSettingField::T::Bool: return "bool";
     case HubSettingField::T::Int:  return "int";
     case HubSettingField::T::Choice: return "choice";
+    case HubSettingField::T::Select: return "select";
     case HubSettingField::T::PortBools: return "port_bools";
     default:                       return "string";
     }
@@ -82,6 +83,28 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
             fj["value"] = f.value;
         if (f.type == HubSettingField::T::Choice)
             fj["options"] = optionListJson(f.options);
+        if (f.type == HubSettingField::T::Select)
+        {
+            // "value:label" pairs -> [{"value":..,"label":..}]
+            nlohmann::json options = nlohmann::json::array();
+            for (auto &pair : optionListJson(f.options))
+            {
+                String p = pair.get<std::string>().c_str();
+                int colon = p.indexOf(':');
+                String value = colon >= 0 ? p.substring(0, colon) : p;
+                String label = colon >= 0 ? p.substring(colon + 1) : p;
+                options.push_back({{"value", value.c_str()}, {"label", label.c_str()}});
+            }
+            fj["options"] = options;
+        }
+        if (f.on_label)
+            fj["on_label"] = f.on_label;
+        if (f.off_label)
+            fj["off_label"] = f.off_label;
+        if (f.disabled_by)
+            fj["disabled_by"] = f.disabled_by;
+        if (f.unique)
+            fj["unique"] = true;
         if (f.secret)
         {
             // Never send a secret back out, only whether one is stored.
@@ -192,6 +215,20 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         SettingsLock lock;
         if (req->hasParam("n") && req->hasParam("on"))
             portFn(req->getParam("n")->value().toInt(), req->getParam("on")->value().toInt() != 0);
+        req->send(200, "application/json", statusFn());
+    });
+
+    // POST /api/usbs3?on=0|1 — connect or disconnect the ESP32-S3 from the hub
+    // (its USB serial/JTAG port). Replies with the status read back afterwards.
+    server.on("/api/usbs3", HTTP_POST, [this, statusFn](AsyncWebServerRequest *req) {
+        String v = req->hasParam("on") ? req->getParam("on")->value() : String();
+        if (v != "0" && v != "1")
+        {
+            req->send(400, "application/json", "{\"error\":\"bad param\",\"detail\":\"on must be 0 or 1\"}");
+            return;
+        }
+        _rest.setS3UsbConnected(v == "1");
+        SettingsLock lock;
         req->send(200, "application/json", statusFn());
     });
 
@@ -446,6 +483,34 @@ void HubWebServer::registerRest()
         }
         _rest.setAllPorts(on);
         req->send(200, "application/json", _rest.ports());
+    });
+
+    // POST /api/hub/usbs3?on=0|1 (also true/false, on/off) — connect or
+    // disconnect the ESP32-S3 from the hub. Replies with GET /api/hub
+    // read back afterwards.
+    server.on("/api/hub/usbs3", HTTP_POST, [this](AsyncWebServerRequest *req) {
+        if (!exactPath(req, "/api/hub/usbs3"))
+            return;
+        String v = req->hasParam("on") ? req->getParam("on")->value() : String();
+        v.toLowerCase();
+        bool on = (v == "1" || v == "true" || v == "on");
+        bool off = (v == "0" || v == "false" || v == "off");
+        if (!on && !off)
+        {
+            req->send(400, "application/json", "{\"error\":\"bad param\",\"detail\":\"on must be 0 or 1\"}");
+            return;
+        }
+        _rest.setS3UsbConnected(on);
+        SettingsLock lock;
+        req->send(200, "application/json", _rest.hub());
+    });
+
+    // POST /api/hub/reboot — restart the hub, half a second after replying.
+    server.on("/api/hub/reboot", HTTP_POST, [this](AsyncWebServerRequest *req) {
+        if (!exactPath(req, "/api/hub/reboot"))
+            return;
+        _rest.reboot();
+        req->send(200, "application/json", "{\"ok\":true}");
     });
 
     server.on("/api/hub", HTTP_GET, [this](AsyncWebServerRequest *req) {

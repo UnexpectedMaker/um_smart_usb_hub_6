@@ -7,7 +7,8 @@
 //
 // EspHomeApi.h — Home Assistant support through the ESPHome native API
 // (plaintext, port 6053). Each port is a power switch, a device-connected
-// sensor and a current sensor; the hub adds temperature and humidity.
+// sensor and a current sensor; the hub adds temperature and humidity, a switch
+// for the ESP32-S3's USB connection to the hub, and a reboot button.
 //
 // Like HubWebServer, the hardware is reached only through hooks from
 // main.cpp. Everything runs in loop() and never waits on the network: sockets
@@ -32,6 +33,9 @@ public:
         void (*setPort)(uint8_t port, bool on);
         bool (*portAmps)(uint8_t port, float &amps); // false if the port has no monitor
         bool (*climate)(float &tempC, float &humidity); // false until there's a reading
+        bool (*s3UsbConnected)();              // the ESP32-S3's USB connection to the hub
+        void (*setS3UsbConnected)(bool on);
+        void (*reboot)();
     };
 
     // Allocate the buffers. Call once mDNS is up; later calls do nothing.
@@ -98,10 +102,11 @@ private:
     // Name, MAC, versions and the friendly name.
     void sendDeviceInfo(Client &c);
     // Each port's switch, connected sensor and current sensor, the temperature
-    // and humidity sensors, then the end of the list.
+    // and humidity sensors, the ESP32-S3 USB switch and the reboot button, then the end
+    // of the list.
     void sendEntities(Client &c);
-    // Port power state.
-    void sendSwitch(Client &c, uint8_t port, bool on);
+    // A switch's state: a port's power, or the ESP32-S3's USB connection.
+    void sendSwitch(Client &c, uint32_t key, bool on);
     // Whether a device is plugged in.
     void sendConnected(Client &c, uint8_t port, bool connected);
     // A sensor reading; marked missing when there isn't one.
@@ -118,6 +123,7 @@ private:
 
     bool _lastOn[HUB_NUM_PORTS] = {};
     bool _lastConnected[HUB_NUM_PORTS] = {};
+    bool _lastS3Usb = false;
     float _lastAmps[HUB_NUM_PORTS] = {};
     bool _lastClimateOk = false;
     float _lastTempC = 0.0f;

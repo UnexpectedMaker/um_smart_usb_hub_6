@@ -48,9 +48,10 @@
 #include "settings/HubSettings.h"
 #include "history/EnvHistory.h"
 #include "history/PortHistory.h"
+#include "soc/usb_serial_jtag_struct.h" // USB D+ pull-up, for s3UsbSetConnected()
 
 // Firmware version, reported by the web UI, the API and 'info'.
-#define HUB_FW_VERSION "2.2.0"
+#define HUB_FW_VERSION "2.3.0"
 
 #define NUM_PORTS HUB_NUM_PORTS
 
@@ -94,8 +95,8 @@ HubConfig config;
 // Power monitors. Measurement only — over-current faults come from the
 // TPS2552 load switches. Channels run high-to-low: CH1 is the chip's highest
 // port. Every channel has a 100 mOhm shunt.
-INA3221 ina_a; // 0x40, ports 1-3
-INA3221 ina_b; // 0x41, ports 4-6
+INA3221 ina_a;              // 0x40, ports 1-3
+INA3221 ina_b;              // 0x41, ports 4-6
 #define INA_SHUNT_OHMS 0.1f // the web page's graph uses the same value (HubWebUI.h, SHUNT_MA)
 
 // Temperature / humidity. The AHT20 is register-compatible with the DHT20.
@@ -299,13 +300,13 @@ void profilerTask(void *)
             int16_t bus = chip.bus_voltage_raw(ch);
             if (chip.last_error() != INA3221_OK)
             {
-                g_profileFailed++;
+                g_profileFailed = g_profileFailed + 1;
                 continue;
             }
             int16_t shunt = chip.shunt_voltage_raw(ch);
             if (chip.last_error() != INA3221_OK)
             {
-                g_profileFailed++;
+                g_profileFailed = g_profileFailed + 1;
                 continue;
             }
             readings[i] = {true, bus, shunt};
@@ -520,7 +521,7 @@ static float pulseLevel(uint32_t now)
 
 // Identify: flash a port's LED white so it can be found on the hub. Started
 // from the web UI's find button; overrides the port's state while it runs.
-#define IDENTIFY_MS 1500 // three flashes
+#define IDENTIFY_MS 1500                               // three flashes
 static volatile uint32_t g_identifyAt[NUM_PORTS] = {}; // millis() when it started; 0 = not running. Set from the web task.
 
 void identifyPort(uint8_t i)
@@ -638,22 +639,38 @@ const char *resetReasonStr(esp_reset_reason_t r)
 {
     switch (r)
     {
-    case ESP_RST_POWERON:   return "POWERON";
-    case ESP_RST_EXT:       return "EXT";
-    case ESP_RST_SW:        return "SW";
-    case ESP_RST_PANIC:     return "PANIC";
-    case ESP_RST_INT_WDT:   return "INT_WDT";
-    case ESP_RST_TASK_WDT:  return "TASK_WDT";
-    case ESP_RST_WDT:       return "WDT";
-    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
-    case ESP_RST_BROWNOUT:  return "BROWNOUT";
-    case ESP_RST_SDIO:      return "SDIO";
-    case ESP_RST_USB:       return "USB";        // reset over USB, e.g. flashing
-    case ESP_RST_JTAG:      return "JTAG";
-    case ESP_RST_EFUSE:     return "EFUSE";
-    case ESP_RST_PWR_GLITCH: return "PWR_GLITCH";
-    case ESP_RST_CPU_LOCKUP: return "CPU_LOCKUP";
-    default:                return "UNKNOWN";
+    case ESP_RST_POWERON:
+        return "POWERON";
+    case ESP_RST_EXT:
+        return "EXT";
+    case ESP_RST_SW:
+        return "SW";
+    case ESP_RST_PANIC:
+        return "PANIC";
+    case ESP_RST_INT_WDT:
+        return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+        return "TASK_WDT";
+    case ESP_RST_WDT:
+        return "WDT";
+    case ESP_RST_DEEPSLEEP:
+        return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+        return "BROWNOUT";
+    case ESP_RST_SDIO:
+        return "SDIO";
+    case ESP_RST_USB:
+        return "USB"; // reset over USB, e.g. flashing
+    case ESP_RST_JTAG:
+        return "JTAG";
+    case ESP_RST_EFUSE:
+        return "EFUSE";
+    case ESP_RST_PWR_GLITCH:
+        return "PWR_GLITCH";
+    case ESP_RST_CPU_LOCKUP:
+        return "CPU_LOCKUP";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -733,9 +750,8 @@ void buildEvents(uint8_t port, std::vector<SchedEvent> &out)
         }
     }
     // Time order; at the same instant ON comes before OFF.
-    std::sort(out.begin(), out.end(), [](const SchedEvent &a, const SchedEvent &b) {
-        return (a.at != b.at) ? a.at < b.at : a.on > b.on;
-    });
+    std::sort(out.begin(), out.end(), [](const SchedEvent &a, const SchedEvent &b)
+              { return (a.at != b.at) ? a.at < b.at : a.on > b.on; });
 }
 
 // Expanded events per port. ON EVERY entries expand into hundreds of events,
@@ -956,6 +972,45 @@ String clockJson(bool rest)
     return j + "}";
 }
 
+// The ESP32-S3's USB connection to the hub: its USB serial/JTAG port, on the
+// CH339W's USB1. Disconnecting takes the D+ pull-up away; reconnecting puts
+// it back and the S3 enumerates on the hub again, as if just plugged in.
+// Only the S3 is affected: the firmware keeps running, and the six downstream
+// ports carry on as before. The state survives a software restart,
+// so setup() always sets it.
+static volatile bool g_s3UsbConnected = true;
+
+void s3UsbSetConnected(bool on)
+{
+    if (on)
+    {
+        // Back to the controller's own pull-up control, D+ pulled up: the
+        // same settings the Arduino core starts the port with.
+        USB_SERIAL_JTAG.conf0.pad_pull_override = 0;
+        USB_SERIAL_JTAG.conf0.dp_pullup = 1;
+    }
+    else
+    {
+        // Software control of the pulls, all of them off.
+        USB_SERIAL_JTAG.conf0.dp_pullup = 0;
+        USB_SERIAL_JTAG.conf0.dp_pulldown = 0;
+        USB_SERIAL_JTAG.conf0.dm_pullup = 0;
+        USB_SERIAL_JTAG.conf0.dm_pulldown = 0;
+        USB_SERIAL_JTAG.conf0.pad_pull_override = 1;
+    }
+    g_s3UsbConnected = on;
+}
+
+// Reboot the hub from the web UI, the REST API or Home Assistant. loop() does
+// it REBOOT_DELAY_MS later, so the request that asked for it gets its reply.
+#define REBOOT_DELAY_MS 500
+static volatile uint32_t g_rebootAt = 0; // millis() when asked; 0 = not asked
+
+void requestReboot()
+{
+    g_rebootAt = millis() | 1; // never 0, which means "not asked"
+}
+
 // GET /api/status — everything the web page shows, in one object.
 String buildStatusJson()
 {
@@ -976,6 +1031,7 @@ String buildStatusJson()
     j += ",\"maxblk\":" + String((uint32_t)ESP.getMaxAllocHeap());
     j += ",\"main5v\":" + String(jb(main5vPresent()));
     j += ",\"upstream5v\":" + String(jb(upstream5vPresent()));
+    j += ",\"s3_usb_connected\":" + String(jb(g_s3UsbConnected));
     j += ",\"temp\":{\"valid\":" + String(jb(g_tempValid));
     j += ",\"c\":" + String(g_tempC, 1) + ",\"h\":" + String(g_humid, 1) + "}";
     j += "," + clockJson(false);
@@ -1020,10 +1076,14 @@ const char *schedModeStr(const HubScheduleEntry &e)
         return "off";
     switch (e.mode)
     {
-    case 1:  return "on_for";
-    case 2:  return "on_until";
-    case 3:  return "on_every";
-    default: return "on";
+    case 1:
+        return "on_for";
+    case 2:
+        return "on_until";
+    case 3:
+        return "on_every";
+    default:
+        return "on";
     }
 }
 
@@ -1155,6 +1215,7 @@ String apiHubJson()
     j += ",\"ina_1\":" + String(jb(g_inaAok));
     j += ",\"ina_2\":" + String(jb(g_inaBok));
     j += ",\"aht20\":" + String(jb(g_ahtOk)) + "}";
+    j += ",\"s3_usb_connected\":" + String(jb(g_s3UsbConnected));
     j += ",\"memory\":{\"heap_free\":" + String((uint32_t)ESP.getFreeHeap());
     j += ",\"heap_max_block\":" + String((uint32_t)ESP.getMaxAllocHeap()) + "}";
     j += ",\"ports_summary\":{\"count\":" + String(NUM_PORTS);
@@ -1186,10 +1247,14 @@ void startOTA()
         return;
     started = true;
     ArduinoOTA.setHostname(g_device.hostname().c_str());
-    ArduinoOTA.onStart([]() { Serial.println("[ota] update starting"); });
-    ArduinoOTA.onEnd([]() { Serial.println("\r\n[ota] update complete"); });
-    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { Serial.printf("[ota] %u%%\r", t ? (p * 100) / t : 0); });
-    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] error %u\r\n", e); });
+    ArduinoOTA.onStart([]()
+                       { Serial.println("[ota] update starting"); });
+    ArduinoOTA.onEnd([]()
+                     { Serial.println("\r\n[ota] update complete"); });
+    ArduinoOTA.onProgress([](unsigned int p, unsigned int t)
+                          { Serial.printf("[ota] %u%%\r", t ? (p * 100) / t : 0); });
+    ArduinoOTA.onError([](ota_error_t e)
+                       { Serial.printf("[ota] error %u\r\n", e); });
     ArduinoOTA.begin();
     MDNS.addService("http", "tcp", 80); // advertise the web UI as well
     // TXT records so discovery tools can identify the device
@@ -1242,47 +1307,68 @@ void startNetServices()
 {
     Serial.printf("[wifi] connected — IP %s\r\n", WiFi.localIP().toString().c_str());
     webServer.setRest({apiHubJson, apiPortsJson, apiPortJson, apiPortScheduleJson,
-                       [](bool on) {
+                       [](bool on)
+                       {
                            for (auto &p : ports)
                                p.setEnabled(on);
                        },
-                       [](int n) { identifyPort(n - 1); }});
+                       [](int n)
+                       { identifyPort(n - 1); },
+                       s3UsbSetConnected,
+                       requestReboot});
     webServer.begin(
         buildStatusJson,
-        [](const String &t) {
+        [](const String &t)
+        {
             g_website.setTheme(t);
             g_website.save();
         },
-        [](int n, bool on) {
+        [](int n, bool on)
+        {
             if (n >= 1 && n <= NUM_PORTS)
                 ports[n - 1].setEnabled(on);
         },
-        [](Print &out, uint32_t sinceMs, bool absoluteTime) {
+        [](Print &out, uint32_t sinceMs, bool absoluteTime)
+        {
             g_envHistory.writeJson(out, millis(), sinceMs, absoluteTime);
         },
-        []() { return g_schedules.toJsonString(); },
-        [](const String &body) {
+        []()
+        { return g_schedules.toJsonString(); },
+        [](const String &body)
+        {
             if (g_schedules.setFromJson(body))
                 g_schedules.save();
         });
     Serial.printf("[web] http://%s/\r\n", WiFi.localIP().toString().c_str());
     startOTA();
-    g_espHomeApi.begin({[]() { return g_esphome.config().enabled; },
-                        []() { return g_device.config().device_name.c_str(); },
-                        [](uint8_t i) { return ports[i].isEnabled(); },
-                        [](uint8_t i) { return ports[i].isOccupied(); },
-                        [](uint8_t i) { return g_ports.config().names[i].c_str(); },
-                        [](uint8_t i, bool on) { ports[i].setEnabled(on); },
-                        [](uint8_t i, float &amps) {
+    g_espHomeApi.begin({[]()
+                        { return g_esphome.config().enabled; },
+                        []()
+                        { return g_device.config().device_name.c_str(); },
+                        [](uint8_t i)
+                        { return ports[i].isEnabled(); },
+                        [](uint8_t i)
+                        { return ports[i].isOccupied(); },
+                        [](uint8_t i)
+                        { return g_ports.config().names[i].c_str(); },
+                        [](uint8_t i, bool on)
+                        { ports[i].setEnabled(on); },
+                        [](uint8_t i, float &amps)
+                        {
                             PortReading r = profiledPortReading(i);
                             amps = r.ma / 1000.0f;
                             return r.ok;
                         },
-                        [](float &tempC, float &humidity) {
+                        [](float &tempC, float &humidity)
+                        {
                             tempC = g_tempC;
                             humidity = g_humid;
                             return g_tempValid;
-                        }},
+                        },
+                        []()
+                        { return (bool)g_s3UsbConnected; },
+                        s3UsbSetConnected,
+                        requestReboot},
                        g_device.hostname().c_str(), HUB_FW_VERSION);
     HubRegistry::dispatchNetUp(WiFi.localIP().toString().c_str());
 }
@@ -1329,13 +1415,20 @@ const char *wifiStateStr()
 {
     switch (WiFi.status())
     {
-    case WL_CONNECTED:       return "connected";
-    case WL_NO_SSID_AVAIL:   return "SSID not found";
-    case WL_CONNECT_FAILED:  return "connect failed";
-    case WL_CONNECTION_LOST: return "connection lost";
-    case WL_DISCONNECTED:    return "disconnected";
-    case WL_IDLE_STATUS:     return "idle";
-    default:                 return "unknown";
+    case WL_CONNECTED:
+        return "connected";
+    case WL_NO_SSID_AVAIL:
+        return "SSID not found";
+    case WL_CONNECT_FAILED:
+        return "connect failed";
+    case WL_CONNECTION_LOST:
+        return "connection lost";
+    case WL_DISCONNECTED:
+        return "disconnected";
+    case WL_IDLE_STATUS:
+        return "idle";
+    default:
+        return "unknown";
     }
 }
 
@@ -1572,6 +1665,14 @@ void setup()
 {
     g_i2cMutex = xSemaphoreCreateRecursiveMutex();
 
+    // TEST: reset the CH339W. The datasheet asks for a low pulse over 4 us; the
+    // 10 ms allows for C12 (0.1 uF) on the line. Released, not driven high, so
+    // R17 and the chip's own pull-up bring it back.
+    // pinMode(USB_RESET_PIN, OUTPUT);
+    // digitalWrite(USB_RESET_PIN, LOW);
+    // delay(10);
+    // pinMode(USB_RESET_PIN, INPUT);
+
     // A 4 KB transmit buffer (the default is 256 bytes), set before begin(), so
     // a burst of output waits in the buffer while a serial monitor reads it,
     // instead of being dropped by the zero timeout below.
@@ -1636,10 +1737,11 @@ void setup()
     if (g_ahtOk)
         aht.resetSensor();
 
-    config.begin();         // mount LittleFS and load each group from /settings/
-    g_schedules.validate(); // flag bad entries before anything can fire
+    config.begin();                // mount LittleFS and load each group from /settings/
+    s3UsbSetConnected(!g_s3Usb.config().disconnect_on_boot);
+    g_schedules.validate();        // flag bad entries before anything can fire
     g_history.begin(rawToReading); // PSRAM 100 Hz port history, written by the profiler
-    g_envHistory.begin();   // PSRAM sidebar environment history
+    g_envHistory.begin();          // PSRAM sidebar environment history
     profilerSetAveraging(g_profiler.config().averaging);
 
     strip.setBrightness(g_leds.config().brightness);
@@ -1650,7 +1752,7 @@ void setup()
     for (uint8_t i = 0; i < NUM_PORTS; i++)
         ports[i].begin();
     applyPowerModes();
-    profilerStart();        // INA sampling into the PSRAM history, always running
+    profilerStart(); // INA sampling into the PSRAM history, always running
 
     pinMode(EXP_INT_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(EXP_INT_PIN), onExpanderInt, FALLING);
@@ -1661,10 +1763,12 @@ void setup()
         pinMode(p, INPUT);
 
     // WiFi runs entirely in the background; everything above is already live.
-    WiFi.onEvent([](arduino_event_id_t, arduino_event_info_t) { g_gotIP = true; },
+    WiFi.onEvent([](arduino_event_id_t, arduino_event_info_t)
+                 { g_gotIP = true; },
                  ARDUINO_EVENT_WIFI_STA_GOT_IP);
     WiFi.onEvent(
-        [](arduino_event_id_t, arduino_event_info_t info) {
+        [](arduino_event_id_t, arduino_event_info_t info)
+        {
             g_wifiReason = info.wifi_sta_disconnected.reason;
             g_wifiLost = true;
         },
@@ -1677,8 +1781,155 @@ void setup()
 // Each section that reads or writes settings holds SettingsLock, as the web
 // server's task changes them too. The rest (OTA, expander, sensor, button)
 // runs without it, so the web server isn't kept waiting.
+// ===========================================================================
+// User button: a single, double or long press each does what the button
+// settings say. A short press only counts as a single press once
+// BUTTON_DOUBLE_MS has passed without a second one, so a double press never
+// also fires a single. A long press fires as soon as it's been held
+// BUTTON_LONG_MS, without waiting for the release.
+// ===========================================================================
+#define BUTTON_DEBOUNCE_MS 30
+#define BUTTON_DOUBLE_MS 300 // longest gap from releasing the first press to the second
+#define BUTTON_LONG_MS 1000  // held this long = long press
+#define PORT_CYCLE_OFF_MS 1000 // power-cycle: how long the ports stay off
+
+// Power-cycle in progress: which ports to switch back on, and when they went
+// off (0 = no cycle running). Finished by serviceButton().
+static bool g_cyclePorts[NUM_PORTS] = {};
+static uint32_t g_cycleAt = 0;
+
+// Do one of the BUTTON_ACTIONS (settings/HubSettings.h).
+void runButtonAction(const String &action)
+{
+    if (action == "toggle_ports")
+    {
+        for (auto &port : ports) // each port flips to its opposite state
+            port.setEnabled(!port.isEnabled());
+    }
+    else if (action == "all_on" || action == "all_off")
+    {
+        for (auto &port : ports)
+            port.setEnabled(action == "all_on");
+    }
+    else if (action == "cycle_ports")
+    {
+        // Switch the powered ports off now; serviceButton() switches the same
+        // ports back on PORT_CYCLE_OFF_MS later. Ignored while one is running.
+        if (g_cycleAt)
+            return;
+        for (uint8_t i = 0; i < NUM_PORTS; i++)
+        {
+            g_cyclePorts[i] = ports[i].isEnabled();
+            if (g_cyclePorts[i])
+                ports[i].setEnabled(false);
+        }
+        g_cycleAt = millis() | 1; // never 0, which means "not running"
+    }
+    else if (action == "toggle_leds")
+    {
+        SettingsLock lock;
+        g_leds.fromJson({{"enabled", !g_leds.config().enabled}});
+        g_leds.save();
+    }
+    else if (action == "toggle_s3_usb")
+        s3UsbSetConnected(!g_s3UsbConnected);
+}
+
+enum class ButtonPress
+{
+    Single,
+    Double,
+    Long
+};
+
+// Look up and run the action set for one kind of press.
+void buttonPressed(ButtonPress kind)
+{
+    String action;
+    {
+        SettingsLock lock;
+        const HubButtonConfig &b = g_button.config();
+        action = kind == ButtonPress::Single ? b.press : kind == ButtonPress::Double ? b.double_press : b.long_press;
+    }
+    const char *names[] = {"single", "double", "long"};
+    Serial.printf("[button] %s press: %s\r\n", names[(int)kind], action.c_str());
+    runButtonAction(action);
+}
+
+// Called every pass of loop(): finishes a power-cycle, then reads the button
+// (HIGH while pressed).
+void serviceButton()
+{
+    static bool raw = false;       // the pin as last read
+    static uint32_t rawAt = 0;     // when it last changed
+    static bool down = false;      // debounced: pressed
+    static uint32_t downAt = 0;    // when the current press started
+    static uint32_t upAt = 0;      // when the last short press was released
+    static bool waiting = false;   // a short press, waiting to see if a second follows
+    static bool second = false;    // the current press followed a short one in time
+    static bool longDone = false;  // the current press already fired its long press
+
+    uint32_t now = millis();
+    if (g_cycleAt && now - g_cycleAt >= PORT_CYCLE_OFF_MS)
+    {
+        g_cycleAt = 0;
+        for (uint8_t i = 0; i < NUM_PORTS; i++)
+            if (g_cyclePorts[i])
+                ports[i].setEnabled(true);
+    }
+
+    bool r = digitalRead(BUTTON_PIN) == HIGH;
+    if (r != raw)
+    {
+        raw = r;
+        rawAt = now;
+    }
+
+    if (raw != down && now - rawAt >= BUTTON_DEBOUNCE_MS)
+    {
+        down = raw;
+        if (down)
+        {
+            downAt = now;
+            longDone = false;
+            second = waiting;
+            waiting = false;
+        }
+        else if (!longDone)
+        {
+            if (second)
+                buttonPressed(ButtonPress::Double);
+            else
+            {
+                waiting = true;
+                upAt = now;
+            }
+        }
+    }
+
+    if (down && !longDone && now - downAt >= BUTTON_LONG_MS)
+    {
+        longDone = true;
+        if (second) // a short press, then this one held: that's a single, then a long
+            buttonPressed(ButtonPress::Single);
+        buttonPressed(ButtonPress::Long);
+    }
+
+    if (waiting && now - upAt >= BUTTON_DOUBLE_MS)
+    {
+        waiting = false;
+        buttonPressed(ButtonPress::Single);
+    }
+}
+
 void loop()
 {
+    if (g_rebootAt && millis() - g_rebootAt >= REBOOT_DELAY_MS)
+    {
+        Serial.println("[hub] rebooting...");
+        delay(100);
+        ESP.restart();
+    }
     {
         SettingsLock lock;
         processSerial();
@@ -1772,18 +2023,8 @@ void loop()
         }
     }
 
-    // ---- button: each press flips every port to its opposite state ----
-    static int lastBtn = LOW;
-    static uint32_t lastBtnMs = 0;
-    int btn = digitalRead(BUTTON_PIN);
-    if (btn != lastBtn && millis() - lastBtnMs > 30) // 30 ms debounce
-    {
-        lastBtnMs = millis();
-        lastBtn = btn;
-        if (btn == HIGH)
-            for (auto &port : ports)
-                port.setEnabled(!port.isEnabled());
-    }
+    // ---- user button: single, double and long press ----
+    serviceButton();
 
     // ---- LEDs at ~50 fps: boot sweep first, then the port states ----
     static uint32_t lastFrame = 0;

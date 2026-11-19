@@ -37,6 +37,7 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
     <span class="ident-maker">by Unexpected Maker</span>
   </div>
   <div class="tools">
+    <button id="s3usb-toggle" class="tool" onclick="toggleS3Usb()" title="ESP32-S3 USB to the hub: blue = connected, grey = disconnected. Click to change."><i data-icon="usb"></i></button>
     <button id="view-history" class="tool" onclick="setViewMode('history')" title="History: clicking a port shows its graph"><i data-icon="graph"></i></button>
     <button id="view-schedule" class="tool" onclick="setViewMode('schedule')" title="Schedule: clicking a port shows its schedule"><i data-icon="calendar"></i></button>
     <button id="theme-toggle" class="tool" onclick="toggleTheme()" title="Light / dark"><i data-icon="sun"></i></button>
@@ -90,10 +91,13 @@ static const char HUB_INDEX_HTML[] PROGMEM = R"rawliteral(
       <button class="tool" onclick="closeSettings()" title="Close"><i data-icon="x"></i></button>
     </div>
     <div class="drawer-body" id="settings-panels"></div>
-    <div class="drawer-foot">
-      <span id="cfg-msg" class="cfg-msg"></span>
-      <button class="btn" onclick="detectLocation()">Detect location</button>
-      <button class="btn primary" id="cfg-save" onclick="saveAllSettings()">Save</button>
+    <div class="drawer-foot" id="drawer-foot">
+      <button class="tool foot-main" onclick="askReboot(true)" title="Reboot the hub"><i data-icon="sync"></i></button>
+      <span id="cfg-msg" class="cfg-msg foot-main"></span>
+      <button class="btn foot-main" onclick="detectLocation()">Detect location</button>
+      <button class="btn primary foot-main" id="cfg-save" onclick="saveAllSettings()">Save</button>
+      <button class="btn danger foot-reboot" onclick="rebootHub()">Reboot Now</button>
+      <button class="btn foot-reboot" onclick="askReboot(false)">Cancel</button>
     </div>
   </div>
 </div>
@@ -188,6 +192,8 @@ body { background:var(--bg); color:var(--text); }
   background:var(--surface); color:var(--text-muted); border:1px solid var(--border); border-radius:50%; }
 .tool:hover { color:var(--text); border-color:var(--text-muted); }
 .tool.on { background:var(--accent); border-color:var(--accent); color:var(--accent-on); }
+/* The ESP32-S3 USB button waiting for the hub's reply. */
+.tool.wait { opacity:.5; }
 
 /* ---- Shown only while the hub is unreachable. Everything below it stays on
    screen but can't be touched, and is greyed so it can't pass for live. ---- */
@@ -507,22 +513,26 @@ body.shift-held .sockets:has(.mini-graph:hover) .socket { background:var(--card)
   transform:translateX(100%); transition:transform .2s; }
 .drawer.open .drawer-panel { transform:none; }
 .drawer-head { display:flex; align-items:center; justify-content:space-between;
-  padding:1rem 1.1rem; border-bottom:1px solid var(--border); }
+  padding:.5rem 1.1rem; border-bottom:1px solid var(--border); }
 .drawer-head h2 { margin:0; font-size:1.05rem; font-weight:600; }
-.drawer-body { flex:1 1 auto; overflow-y:auto; padding:1rem 1.1rem;
-  display:flex; flex-direction:column; gap:.9rem; }
+.drawer-body { flex:1 1 auto; overflow-y:auto; padding:.5rem .55rem;
+  display:flex; flex-direction:column; gap:.55rem; }
 .drawer-foot { display:flex; align-items:center; gap:.5rem; padding:.8rem 1.1rem; border-top:1px solid var(--border); }
 /* Result of the last save / detect, beside the buttons. */
 .cfg-msg { flex:1 1 auto; font-size:.8rem; font-weight:600; color:var(--success); }
 .cfg-msg.err { color:var(--danger); }
+/* The reboot button swaps the footer for [Reboot Now] [Cancel]. */
+.drawer-foot .foot-reboot { display:none; }
+.drawer-foot.confirm .foot-main { display:none; }
+.drawer-foot.confirm .foot-reboot { display:inline-block; }
 
 /* One card per settings group: a clear heading, then "name ...... control"
    lines. Heading is the strongest text in the card; field names are quieter. */
-.cfg-group { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:.75rem .9rem .35rem; }
-.cfg-group h4 { margin:0 0 .35rem; padding-bottom:.5rem; border-bottom:1px solid var(--border);
+.cfg-group { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:.5rem .6rem .23rem; }
+.cfg-group h4 { margin:0 0 .23rem; padding-bottom:.33rem; border-bottom:1px solid var(--border);
   font-size:.95rem; font-weight:600; color:var(--text); }
 .cfg-row { display:flex; align-items:center; justify-content:space-between; gap:1rem;
-  padding:.4rem 0; border-bottom:1px solid var(--border-soft); }
+  padding:.27rem 0; border-bottom:1px solid var(--border-soft); }
 .cfg-row:last-child { border-bottom:none; }
 .cfg-key { font-size:.82rem; color:var(--text-muted); }
 /* Optional one-line hint under a field's name. */
@@ -532,6 +542,11 @@ body.shift-held .sockets:has(.mini-graph:hover) .socket { background:var(--card)
   border-radius:6px; padding:.3rem .5rem; font-size:.85rem; }
 .cfg-in.num { width:6rem; text-align:right; }
 .cfg-in:focus { outline:none; border-color:var(--accent); }
+.cfg-in:disabled { opacity:.4; cursor:not-allowed; }
+/* Drop-down rows: name 40%, drop-down 60%, its text 1pt smaller to fit. */
+.cfg-row.sel .cfg-key { flex:0 0 40%; }
+.cfg-row.sel .cfg-ctl { flex:1 1 0; min-width:0; }
+.cfg-row.sel select { width:100%; font-size:calc(.85rem - 1pt); }
 @media (max-width:440px){ .cfg-in { width:10rem; } }
 /* Reveal button sits inside the password box, so it lines up with the others. */
 .cfg-ctl { position:relative; }
@@ -562,6 +577,7 @@ body.shift-held .sockets:has(.mini-graph:hover) .socket { background:var(--card)
   border:1px solid var(--border); background:var(--surface); color:var(--text); white-space:nowrap; }
 .btn:hover { border-color:var(--text-muted); }
 .btn.primary { background:var(--accent-2); border-color:var(--accent-2); color:#fff; }
+.btn.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
 .btn:disabled { cursor:default; }
 )css";
 
@@ -585,19 +601,25 @@ const ICONS = {
   graph: 'M1.75 13.5h12.5a.75.75 0 0 1 0 1.5H1.75A1.75 1.75 0 0 1 0 13.25V1.75a.75.75 0 0 1 1.5 0v11.5c0 .138.112.25.25.25Zm12.03-9.97a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L7.25 5.62 4.03 8.84a.75.75 0 0 1-1.06-1.06l3.75-3.75a.75.75 0 0 1 1.06 0L10 6.25l2.72-2.72a.75.75 0 0 1 1.06 0Z',
   search: 'M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z',
   pencil: 'M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z',
+  sync: 'M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z',
   x: 'M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z',
   // Phosphor Icons v2.1.1 (MIT, github.com/phosphor-icons/core), "calendar-dots"
   // regular weight, 256px grid: Octicons' calendar has no date grid.
   calendar: 'M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM72,48v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V80H48V48ZM208,208H48V96H208V208Zm-68-76a12,12,0,1,1-12-12A12,12,0,0,1,140,132Zm44,0a12,12,0,1,1-12-12A12,12,0,0,1,184,132ZM96,172a12,12,0,1,1-12-12A12,12,0,0,1,96,172Zm44,0a12,12,0,1,1-12-12A12,12,0,0,1,140,172Zm44,0a12,12,0,1,1-12-12A12,12,0,0,1,184,172Z',
-  // Octicons has no USB symbol — this one is Phosphor Icons v2.1.1 (MIT,
-  // github.com/phosphor-icons/core), "usb" regular weight, 256px grid.
-  usb: 'M252.44,121.34l-48-32A8,8,0,0,0,192,96v24H72V72h33a32,32,0,1,0,0-16H72A16,16,0,0,0,56,72v48H8a8,8,0,0,0,0,16H56v48a16,16,0,0,0,16,16h32v8a16,16,0,0,0,16,16h32a16,16,0,0,0,16-16V176a16,16,0,0,0-16-16H120a16,16,0,0,0-16,16v8H72V136H192v24a8,8,0,0,0,12.44,6.66l48-32a8,8,0,0,0,0-13.32ZM136,48a16,16,0,1,1-16,16A16,16,0,0,1,136,48ZM120,176h32v32H120Zm88-30.95V111l25.58,17Z',
+  // Octicons has no USB symbol, so this one is drawn for the hub: an upright
+  // trident in Octicons' 16px grid and line weight. Raw SVG markup, as it
+  // mixes lines with filled shapes (see ic()).
+  usb: '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M8 13V3.5M8 11L4.5 9V6.8M8 9.5l3.5-2V5.8"/></g>' +
+    '<path d="M8 .8l2.2 3H5.8z"/><circle cx="8" cy="13.6" r="1.6"/><circle cx="4.5" cy="5.6" r="1.3"/>' +
+    '<rect x="10.3" y="3.6" width="2.4" height="2.4"/>',
 };
 // Icons not drawn on Octicons' 16px grid.
-const ICON_VB = { usb: '0 0 256 256', calendar: '0 0 256 256' };
+const ICON_VB = { calendar: '0 0 256 256' };
 // An icon from ICONS as inline SVG markup, sized to the surrounding text.
-const ic = (n) => '<svg class="oi" viewBox="' + (ICON_VB[n] || '0 0 16 16') + '" aria-hidden="true"><path d="' +
-  ICONS[n].split('|').join('"/><path d="') + '"/></svg>';
+// An entry starting with '<' is raw SVG markup, used as it is.
+const ic = (n) => '<svg class="oi" viewBox="' + (ICON_VB[n] || '0 0 16 16') + '" aria-hidden="true">' +
+  (ICONS[n][0] === '<' ? ICONS[n] : '<path d="' + ICONS[n].split('|').join('"/><path d="') + '"/>') + '</svg>';
 // Swap the static <i data-icon="…"> placeholders in the page for real SVGs.
 document.querySelectorAll('[data-icon]').forEach((el) => { el.outerHTML = ic(el.dataset.icon); });
 
@@ -2356,6 +2378,26 @@ function togglePower(n) {
     .catch(() => { inflight.delete(n); setOffline(true); });
 }
 
+// Connect / disconnect the ESP32-S3 from the hub (its USB serial/JTAG port on
+// the CH339W's USB1). The button is blue while connected; it holds its state,
+// dimmed, until the hub's reply shows the real one.
+let s3UsbInflight = false;
+function applyS3Usb(connected) {
+  if (s3UsbInflight || connected === undefined) return;
+  $('s3usb-toggle').classList.toggle('on', !!connected);
+}
+function toggleS3Usb() {
+  if (s3UsbInflight) return;
+  const on = !$('s3usb-toggle').classList.contains('on');
+  s3UsbInflight = true;
+  $('s3usb-toggle').classList.add('wait');
+  const done = () => { s3UsbInflight = false; $('s3usb-toggle').classList.remove('wait'); };
+  fetch('/api/usbs3?on=' + (on ? 1 : 0), { method: 'POST' })
+    .then((r) => r.json())
+    .then((d) => { done(); applyStatus(d); })
+    .catch(() => { done(); setOffline(true); });
+}
+
 // Flash port n's LED three times so it can be found on the hub. The card's
 // slot flashes with it, as the slot mirrors the LED.
 const IDENTIFY_MS = 1500;
@@ -2416,6 +2458,7 @@ async function savePortName(n, el) {
 // "name ...... control" line per field. A single Save sends every group.
 function openSettings() {
   cfgMsg('');
+  askReboot(false);
   $('drawer').classList.add('open');
   $('drawer').setAttribute('aria-hidden', 'false');
   loadSettings();
@@ -2445,7 +2488,7 @@ let cfgTimer = null;
 function cfgMsg(text, bad) {
   const el = $('cfg-msg');
   el.textContent = text;
-  el.className = 'cfg-msg' + (bad ? ' err' : '');
+  el.className = 'cfg-msg foot-main' + (bad ? ' err' : '');
   clearTimeout(cfgTimer);
   if (text) cfgTimer = setTimeout(() => { el.textContent = ''; }, 3000);
 }
@@ -2473,6 +2516,17 @@ function renderSettings(groups) {
         '</section>').join('')
     : '<p class="sched-empty">No settings.</p>';
   document.querySelectorAll('.cfg-group').forEach(updatePortMarks);
+  document.querySelectorAll('.cfg-group').forEach(lockUnique);
+}
+
+// In a group's unique drop-downs, grey out each option another drop-down has
+// already chosen. The first option (the "nothing" choice) is always free.
+function lockUnique(sec) {
+  const sels = [...sec.querySelectorAll('select[data-unique]')];
+  sels.forEach((s) => {
+    const taken = sels.filter((o) => o !== s).map((o) => o.value);
+    [...s.options].forEach((opt, i) => { opt.disabled = i > 0 && taken.includes(opt.value); });
+  });
 }
 
 // True when a group has per-port rows that share a key (one choice per port).
@@ -2500,7 +2554,7 @@ function cfgRow(g, f) {
     // "X ...... [Enabled]"; anything else as "Label ...... [On]".
     const m = /^(.*?)\s*enabled$/i.exec(f.label || '');
     if (m) key = m[1].trim() || g.label;
-    const lOn = m ? 'Enabled' : 'On', lOff = m ? 'Disabled' : 'Off';
+    const lOn = f.on_label || (m ? 'Enabled' : 'On'), lOff = f.off_label || (m ? 'Disabled' : 'Off');
     const on = !!v;
     ctl = '<button type="button" class="bool-btn' + (on ? ' on' : '') + '" id="' + id + '"' +
       ' data-key="' + esc(f.key) + '" data-bool="' + (on ? 1 : 0) + '"' +
@@ -2529,9 +2583,17 @@ function cfgRow(g, f) {
         return '<button type="button" class="' + (on ? 'on' : '') + '" data-value="' + esc(value) + '"' +
           ' onclick="chooseSetting(this)">' + esc(value) + '</button>';
       }).join('') + '</span>';
+  } else if (f.type === 'select') {
+    // A drop-down; options are {value, label}. Saves as the chosen value.
+    const options = Array.isArray(f.options) ? f.options : [];
+    ctl = '<select class="cfg-in" id="' + id + '" data-key="' + esc(f.key) + '"' +
+      (f.unique ? ' data-unique="1" onchange="lockUnique(this.closest(\'.cfg-group\'))"' : '') + '>' +
+      options.map((o) => '<option value="' + esc(o.value) + '"' + (o.value === v ? ' selected' : '') + '>' +
+        esc(o.label) + '</option>').join('') + '</select>';
   } else if (f.type === 'int') {
     ctl = '<input class="cfg-in num" type="number" id="' + id + '" data-key="' + esc(f.key) + '"' +
-      ' value="' + (v != null ? v : 0) + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '">';
+      ' value="' + (v != null ? v : 0) + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '"' +
+      lockAttrs(g, f) + '>';
   } else {
     const secret = isSecret(f);
     // A write-only field starts empty and is only sent once it's edited, so
@@ -2543,21 +2605,31 @@ function cfgRow(g, f) {
         ? ' value="" data-write-only="1" oninput="this.dataset.edited=1"' +
           ' placeholder="' + (f.set ? 'Saved, type to change' : 'Not set') + '"'
         : ' value="' + esc(v) + '"') +
+      lockAttrs(g, f) +
       ' autocomplete="' + (secret ? 'new-password' : 'off') + '">' +
       (secret ? '<button type="button" class="cfg-eye" title="Show / hide" onclick="reveal(\'' + id + '\', this)">' +
                 ic('eye') + '</button>' : '');
   }
-  return '<div class="cfg-row"><span class="cfg-key">' + esc(key) +
+  return '<div class="cfg-row' + (f.type === 'select' ? ' sel' : '') + '"><span class="cfg-key">' + esc(key) +
          (f.help ? '<span class="cfg-help">' + esc(f.help) + '</span>' : '') + '</span>' +
          '<span class="cfg-ctl">' + ctl + '</span></div>';
 }
 
-// A bool button was clicked: flip its value and its label.
+// A field with disabled_by starts disabled while that bool field is on.
+function lockAttrs(g, f) {
+  if (!f.disabled_by) return '';
+  return ' data-disabled-by="' + esc(f.disabled_by) + '"' + ((g.values || {})[f.disabled_by] ? ' disabled' : '');
+}
+
+// A bool button was clicked: flip its value and its label, and enable or
+// disable the fields in its group that depend on it.
 function flipBool(btn) {
   const on = btn.dataset.bool !== '1';
   btn.dataset.bool = on ? '1' : '0';
   btn.classList.toggle('on', on);
   btn.textContent = on ? btn.dataset.on : btn.dataset.off;
+  const sec = btn.closest('.cfg-group');
+  if (sec) sec.querySelectorAll('[data-disabled-by="' + btn.dataset.key + '"]').forEach((el) => { el.disabled = on; });
 }
 
 // A per-port button was clicked: flip it. Rows that share a key are one
@@ -2630,6 +2702,21 @@ async function saveAllSettings() {
   }
   btn.disabled = false;
   btn.textContent = 'Save';
+}
+
+// The footer's reboot button: show [Reboot Now] [Cancel] in place of the
+// usual buttons, or put them back.
+function askReboot(on) { $('drawer-foot').classList.toggle('confirm', on); }
+// Restart the hub. The page shows it as offline until it's back.
+async function rebootHub() {
+  askReboot(false);
+  try {
+    const r = await fetch('/api/hub/reboot', { method: 'POST' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    cfgMsg('Rebooting…');
+  } catch (e) {
+    cfgMsg('Reboot failed', true);
+  }
 }
 
 // Ask the hub to fill city / country / UTC offset from its public IP, then
@@ -3175,6 +3262,7 @@ function applyStatus(d) {
   if (!d) return;
   if (!themeSet) { themeSet = true; applyTheme(d.theme || 'dark'); }
   applyUiPrefs(d.ui);
+  applyS3Usb(d.s3_usb_connected);
   // The averaging setting, unless the graph's buttons changed it in the last
   // 2 s and the hub's reply may not show it yet.
   if (d.ui && [0, 2, 4, 8, 16].includes(+d.ui.averaging) && performance.now() - graphAveragingSetAt > 2000 &&

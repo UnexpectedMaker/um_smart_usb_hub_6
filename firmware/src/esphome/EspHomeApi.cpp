@@ -6,8 +6,8 @@
 // License, version 3 or (at your option) any later version. See LICENSE.
 //
 // EspHomeApi.cpp — the minimal part of the ESPHome native API that Home
-// Assistant needs: handshake, device info, entity list, states, ping and
-// switch commands. Message ids and fields follow esphome/components/api/api.proto.
+// Assistant needs: handshake, device info, entity list, states, ping, switch
+// and button commands. Message ids and fields follow esphome/components/api/api.proto.
 //
 // Messages are protobuf, encoded by hand straight into the PSRAM frame buffer.
 // Each is built after the first HEADER_BYTES, and its frame header (0x00,
@@ -51,6 +51,8 @@ enum MsgType : uint32_t
     SENSOR_STATE_RESPONSE = 25,
     SWITCH_STATE_RESPONSE = 26,
     SWITCH_COMMAND_REQUEST = 33,
+    LIST_BUTTON_RESPONSE = 61,
+    BUTTON_COMMAND_REQUEST = 62,
 };
 
 // Entity keys for port i (0-5).
@@ -60,6 +62,11 @@ uint32_t connectedKey(uint8_t i) { return 201 + i; }
 // Entity keys for the hub's own sensors.
 constexpr uint32_t TEMPERATURE_KEY = 301;
 constexpr uint32_t HUMIDITY_KEY = 302;
+constexpr uint32_t S3_USB_KEY = 401; // switch: the ESP32-S3's USB connection to the hub
+constexpr uint32_t REBOOT_KEY = 402; // button
+
+// EntityCategory: shown under the device's Configuration, not its controls.
+constexpr uint32_t ENTITY_CATEGORY_CONFIG = 1;
 
 // Protobuf encoder writing into a fixed buffer. len keeps counting past cap,
 // so len > cap means the message didn't fit.
@@ -147,7 +154,8 @@ bool readVarint(const uint8_t *&p, const uint8_t *end, uint32_t &v)
     return false;
 }
 
-// Pull key and state out of a SwitchCommandRequest.
+// Pull key and state out of a SwitchCommandRequest. Also reads the key of a
+// ButtonCommandRequest, which has the same field 1 and no state.
 void parseSwitchCommand(const uint8_t *p, const uint8_t *end, uint32_t &key, bool &state)
 {
     while (p < end)
@@ -254,6 +262,7 @@ void EspHomeApi::start()
         _portNameHash[i] = nameHash(_hooks.portName(i));
     }
     _deviceNameHash = nameHash(_hooks.deviceName());
+    _lastS3Usb = _hooks.s3UsbConnected();
 
     // The socket is opened once and kept: the port can't always be bound
     // again straight after it's closed.
@@ -331,7 +340,7 @@ void EspHomeApi::acceptClient()
         return;
     }
     // No TCP_NODELAY: lwIP queues at most 16 segments per socket, and the
-    // entity list alone is 19 frames. Nagle lets back-to-back frames share
+    // entity list alone is 21 frames. Nagle lets back-to-back frames share
     // segments; a single frame still goes out straight away.
     fcntl(fd, F_SETFL, O_NONBLOCK);
     slot->fd = fd;
@@ -487,13 +496,30 @@ void EspHomeApi::sendEntities(Client &c)
     hum.u32(10, 1); // measurement
     transmit(c, LIST_SENSOR_RESPONSE, hum.len);
 
+    Proto s3usb(message(), MESSAGE_BYTES);
+    s3usb.str(1, "s3_usb");
+    s3usb.fixed32(2, S3_USB_KEY);
+    s3usb.str(3, "ESP32-S3 USB");
+    s3usb.str(5, "mdi:usb");
+    s3usb.u32(8, ENTITY_CATEGORY_CONFIG);
+    s3usb.str(9, "switch");
+    transmit(c, LIST_SWITCH_RESPONSE, s3usb.len);
+
+    Proto reboot(message(), MESSAGE_BYTES);
+    reboot.str(1, "reboot");
+    reboot.fixed32(2, REBOOT_KEY);
+    reboot.str(3, "Reboot");
+    reboot.u32(7, ENTITY_CATEGORY_CONFIG);
+    reboot.str(8, "restart");
+    transmit(c, LIST_BUTTON_RESPONSE, reboot.len);
+
     transmit(c, LIST_DONE_RESPONSE, 0);
 }
 
-void EspHomeApi::sendSwitch(Client &c, uint8_t port, bool on)
+void EspHomeApi::sendSwitch(Client &c, uint32_t key, bool on)
 {
     Proto p(message(), MESSAGE_BYTES);
-    p.fixed32(1, switchKey(port));
+    p.fixed32(1, key);
     p.u32(2, on);
     transmit(c, SWITCH_STATE_RESPONSE, p.len);
 }
@@ -552,7 +578,7 @@ void EspHomeApi::handle(Client &c, uint32_t type, const uint8_t *p, const uint8_
         {
             float amps = 0.0f;
             bool ok = _hooks.portAmps(i, amps);
-            sendSwitch(c, i, _hooks.portOn(i));
+            sendSwitch(c, switchKey(i), _hooks.portOn(i));
             sendConnected(c, i, _hooks.portConnected(i));
             sendSensor(c, ampsKey(i), ok, roundAmps(amps));
         }
@@ -562,6 +588,7 @@ void EspHomeApi::handle(Client &c, uint32_t type, const uint8_t *p, const uint8_
             sendSensor(c, TEMPERATURE_KEY, ok, roundTenth(tempC));
             sendSensor(c, HUMIDITY_KEY, ok, roundTenth(humidity));
         }
+        sendSwitch(c, S3_USB_KEY, _hooks.s3UsbConnected());
         break;
     case SWITCH_COMMAND_REQUEST:
     {
@@ -571,6 +598,17 @@ void EspHomeApi::handle(Client &c, uint32_t type, const uint8_t *p, const uint8_
         for (uint8_t i = 0; i < HUB_NUM_PORTS; i++)
             if (key == switchKey(i))
                 _hooks.setPort(i, state);
+        if (key == S3_USB_KEY)
+            _hooks.setS3UsbConnected(state);
+        break;
+    }
+    case BUTTON_COMMAND_REQUEST:
+    {
+        uint32_t key = 0;
+        bool unused = false;
+        parseSwitchCommand(p, end, key, unused);
+        if (key == REBOOT_KEY)
+            _hooks.reboot();
         break;
     }
     }
@@ -587,13 +625,19 @@ void EspHomeApi::pushChanges()
             if (c.fd < 0 || !c.subscribed)
                 continue;
             if (on != _lastOn[i])
-                sendSwitch(c, i, on);
+                sendSwitch(c, switchKey(i), on);
             if (connected != _lastConnected[i])
                 sendConnected(c, i, connected);
         }
         _lastOn[i] = on;
         _lastConnected[i] = connected;
     }
+    bool s3usb = _hooks.s3UsbConnected();
+    if (s3usb != _lastS3Usb)
+        for (auto &c : _clients)
+            if (c.fd >= 0 && c.subscribed)
+                sendSwitch(c, S3_USB_KEY, s3usb);
+    _lastS3Usb = s3usb;
 
     if (millis() - _namesAt >= NAMES_MS)
     {
