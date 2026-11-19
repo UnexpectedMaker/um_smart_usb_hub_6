@@ -48,6 +48,9 @@
 #include "settings/HubSettings.h"
 #include "history/EnvHistory.h"
 #include "history/PortHistory.h"
+#if !ARDUINO_USB_MODE
+#include "esp32-hal-tinyusb.h" // usb_persist_restart() for the 'bootloader' command
+#endif
 
 // Firmware version, reported by the web UI, the API and 'info'.
 #define HUB_FW_VERSION "2.2.0"
@@ -1512,6 +1515,17 @@ void handleSerialCommand(String cmd)
         delay(100);
         ESP.restart();
     }
+#if !ARDUINO_USB_MODE
+    else if (cmd == "bootloader")
+    {
+        // The only way into download mode over USB: the host's DTR/RTS reset
+        // and the 1200-baud touch are ignored (see setup()). The hub comes
+        // back as a 303A:1001 USB serial/JTAG port, ready for esptool.
+        Serial.println("[cmd] rebooting into download mode, now run: pio run -t upload");
+        delay(100);
+        usb_persist_restart(RESTART_BOOTLOADER);
+    }
+#endif
     else if (cmd == "help")
     {
         Serial.println("Commands:");
@@ -1522,6 +1536,9 @@ void handleSerialCommand(String cmd)
         Serial.println("  set_pass <pass>    - store WiFi password");
         Serial.println("  wifi               - connect WiFi with stored creds");
         Serial.println("  restart            - reboot the ESP32-S3");
+#if !ARDUINO_USB_MODE
+        Serial.println("  bootloader         - reboot into USB download mode, to flash");
+#endif
         Serial.println("  help               - this list");
     }
     else if (cmd.length())
@@ -1553,6 +1570,11 @@ void processSerial()
                 Serial.print("\b \b");
             }
         }
+        else if ((uint8_t)c < 0x20 || line.length() >= 128)
+        {
+            // Drop other control bytes and over-long lines: esptool's sync
+            // packets land here when an upload picks this port by mistake.
+        }
         else
         {
             line += c;
@@ -1572,6 +1594,7 @@ void setup()
 {
     g_i2cMutex = xSemaphoreCreateRecursiveMutex();
 
+#if ARDUINO_USB_MODE
     // A 4 KB transmit buffer (the default is 256 bytes), set before begin(), so
     // a burst of output waits in the buffer while a serial monitor reads it,
     // instead of being dropped by the zero timeout below.
@@ -1582,6 +1605,19 @@ void setup()
     // AsyncTCP's 5 s task watchdog. Never call Serial.flush() with this: at
     // a zero timeout it discards the queued output.
     Serial.setTxTimeoutMs(0);
+#else
+    // TinyUSB console. Ignore the host's DTR/RTS reset sequence and the
+    // 1200-baud touch, so an upload aimed at another board can't put the hub
+    // into its bootloader. Flash it with the 'bootloader' command or OTA.
+    Serial.enableReboot(false);
+    Serial.begin(115200);
+    // TinyUSB's transmit FIFO is only 64 bytes and can't be enlarged here, so
+    // a zero timeout would cut every long print short. Writes already return
+    // at once when no terminal has the port open (DTR low), so this timeout
+    // only applies while one is. A stalled terminal then costs at most a few
+    // tens of ms per print, far below AsyncTCP's 5 s task watchdog.
+    Serial.setTxTimeoutMs(20);
+#endif
     // Reported first: the reset reason survives the reset, so this shows a
     // brownout or crash even when a restart loop is too quick to catch.
     Serial.printf("[boot] reset reason: %d (%s)\r\n", (int)esp_reset_reason(), resetReasonStr(esp_reset_reason()));

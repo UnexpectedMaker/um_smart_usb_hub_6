@@ -47,6 +47,17 @@ pio run                      # build
 pio run -t upload            # build and flash over USB
 ```
 
+The hub ignores the reset that `pio run -t upload` normally sends, so an
+upload from another project can't overwrite its firmware by picking the
+wrong port. To flash it over USB, type `bootloader` in its
+[serial console](#serial-console) first: it reboots into download mode and
+reappears as a new USB serial port, then run `pio run -t upload` (add
+`--upload-port <port>` if another ESP32 is plugged in). If the hub isn't
+running this firmware yet, flash it with `--upload-port` set to the hub's
+port. If the console doesn't respond, hold the hub's Boot button, press and
+release Reset, then release Boot: the hub starts in download mode the same
+way.
+
 ### Updating over WiFi
 
 Once the hub is running this firmware and is on your network, you can flash it
@@ -84,6 +95,10 @@ The start-up messages are printed before your computer has finished
 connecting, so you'll usually miss them — that's normal. Type **`info`** to
 see the hub's full current state.
 
+The serial port goes away while the hub restarts and comes back a moment
+later. `pio device monitor` reconnects on its own; other terminals need
+reopening.
+
 ### Commands
 
 | Command | Does |
@@ -96,6 +111,7 @@ see the hub's full current state.
 | `set_pass <password>` | store the WiFi password |
 | `wifi` | connect with the stored details |
 | `restart` | reboot the hub |
+| `bootloader` | reboot into USB download mode, to flash the hub over USB |
 
 ## First-time setup
 
