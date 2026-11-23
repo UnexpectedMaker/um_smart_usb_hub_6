@@ -42,16 +42,19 @@ public:
     // Provide the REST suppliers. Must be called before begin().
     void setRest(const Rest &rest) { _rest = rest; }
 
-    // Register every route and start listening. Call once the network is up;
-    // later calls do nothing.
+    // Register every route. Call once at start-up; later calls do nothing.
     void begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
                EnvHistoryFn envHistoryFn,
                SchedGetFn schedGetFn, SchedSetFn schedSetFn);
+
+    // Start listening. Call once the network is up; later calls do nothing.
+    void listen();
 
 private:
     void registerRest();
     Rest _rest;
     bool _started = false;
+    bool _listening = false;
 };
 
 extern HubWebServer webServer;

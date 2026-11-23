@@ -1301,11 +1301,8 @@ void connectWiFi()
     WiFi.begin(w.ssid.c_str(), w.password.c_str());
 }
 
-// Got an IP: start the web server and OTA (each only once), and tell the
-// settings groups the network is up (location starts NTP).
-void startNetServices()
+void setupApi()
 {
-    Serial.printf("[wifi] connected — IP %s\r\n", WiFi.localIP().toString().c_str());
     webServer.setRest({apiHubJson, apiPortsJson, apiPortJson, apiPortScheduleJson,
                        [](bool on)
                        {
@@ -1339,6 +1336,14 @@ void startNetServices()
             if (g_schedules.setFromJson(body))
                 g_schedules.save();
         });
+}
+
+// Got an IP: start the web server and OTA (each only once), and tell the
+// settings groups the network is up (location starts NTP).
+void startNetServices()
+{
+    Serial.printf("[wifi] connected — IP %s\r\n", WiFi.localIP().toString().c_str());
+    webServer.listen();
     Serial.printf("[web] http://%s/\r\n", WiFi.localIP().toString().c_str());
     startOTA();
     g_espHomeApi.begin({[]()
@@ -1773,6 +1778,7 @@ void setup()
             g_wifiLost = true;
         },
         ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    setupApi();
     g_wifi.consumeChanged(); // loading settings isn't a change to react to
     connectWiFi();
     Serial.println("[boot] setup done");

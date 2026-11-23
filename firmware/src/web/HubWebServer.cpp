@@ -11,6 +11,7 @@
 #include "HubWebServer.h"
 #include "HubWebUI.h"
 #include "HubWebIcons.h"
+#include "api/ApiRequest.h"
 #include "history/PortHistory.h"
 #include "settings/HubSettings.h"
 #include <ESPAsyncWebServer.h>
@@ -18,6 +19,57 @@
 
 static AsyncWebServer server(80);
 HubWebServer webServer;
+
+static constexpr size_t MAX_BODY_BYTES = 16384;
+
+class HttpApiResponse : public ApiResponse
+{
+public:
+    explicit HttpApiResponse(AsyncWebServerResponse *response) : response(response) {}
+    void addHeader(const char *name, const char *value) override { response->addHeader(name, value); }
+    AsyncWebServerResponse *response;
+};
+
+class HttpApiRequest : public ApiRequest
+{
+public:
+    explicit HttpApiRequest(AsyncWebServerRequest *req) : _req(req)
+    {
+        for (size_t i = 0; i < req->params(); i++)
+        {
+            const AsyncWebParameter *param = req->getParam(i);
+            if (!param->isPost() && !param->isFile())
+                _params.emplace_back(param->name(), param->value());
+        }
+    }
+
+    const String &url() const override { return _req->url(); }
+    uint8_t method() const override { return _req->method(); }
+    void send(int code, const char *type, const String &body) override { _req->send(code, type, body); }
+    Print *beginResponseStream(const char *type, size_t bufferSize) override
+    {
+        _stream = _req->beginResponseStream(type, bufferSize);
+        return _stream;
+    }
+    void send(Print *) override { _req->send(_stream); }
+    ApiResponse *beginResponse(const char *type, size_t length, ApiFiller filler) override
+    {
+        return new HttpApiResponse(_req->beginResponse(type, length, filler));
+    }
+    ApiResponse *beginChunkedResponse(const char *type, ApiFiller filler) override
+    {
+        return new HttpApiResponse(_req->beginChunkedResponse(type, filler));
+    }
+    void send(ApiResponse *response) override
+    {
+        _req->send(static_cast<HttpApiResponse *>(response)->response);
+        delete response;
+    }
+
+private:
+    AsyncWebServerRequest *_req;
+    AsyncResponseStream *_stream = nullptr;
+};
 
 // Convert a settings field kind into the JSON schema string used by the UI.
 static const char *fieldTypeStr(HubSettingField::T t)
@@ -123,7 +175,7 @@ static nlohmann::json groupSchemaJson(HubSettings *m)
 
 // A request parameter that must be a whole number, 0..4294967295. False if it
 // isn't.
-static bool paramUint(AsyncWebServerRequest *req, const char *name, uint32_t &out)
+static bool paramUint(ApiRequest *req, const char *name, uint32_t &out)
 {
     const String &v = req->getParam(name)->value();
     if (!v.length() || v.length() > 10)
@@ -144,7 +196,7 @@ static bool paramUint(AsyncWebServerRequest *req, const char *name, uint32_t &ou
 
 // Collect a request body that may arrive in several chunks. Returns true, with
 // the whole body in `out`, once the last chunk is in.
-static bool collectBody(AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total,
+static bool collectBody(ApiRequest *req, uint8_t *data, size_t len, size_t index, size_t total,
                         String &out)
 {
     if (index == 0)
@@ -201,13 +253,13 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     // ---- Web UI data ----
 
     // Everything the page shows, polled once a second.
-    server.on("/api/status", HTTP_GET, [statusFn](AsyncWebServerRequest *req) {
+    api.on("/api/status", HTTP_GET, [statusFn](ApiRequest *req) {
         SettingsLock lock;
         req->send(200, "application/json", statusFn());
     });
 
     // POST /api/theme?value=dark|light — store the UI theme.
-    server.on("/api/theme", HTTP_POST, [themeFn](AsyncWebServerRequest *req) {
+    api.on("/api/theme", HTTP_POST, [themeFn](ApiRequest *req) {
         SettingsLock lock;
         if (req->hasParam("value"))
             themeFn(req->getParam("value")->value());
@@ -216,7 +268,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
 
     // POST /api/port?n=1..6&on=0|1 — switch one port. Replies with the status
     // read back afterwards, so the page shows what really happened.
-    server.on("/api/port", HTTP_POST, [portFn, statusFn](AsyncWebServerRequest *req) {
+    api.on("/api/port", HTTP_POST, [portFn, statusFn](ApiRequest *req) {
         SettingsLock lock;
         if (req->hasParam("n") && req->hasParam("on"))
             portFn(req->getParam("n")->value().toInt(), req->getParam("on")->value().toInt() != 0);
@@ -225,7 +277,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
 
     // POST /api/usbs3?on=0|1 — connect or disconnect the ESP32-S3 from the hub
     // (its USB serial/JTAG port). Replies with the status read back afterwards.
-    server.on("/api/usbs3", HTTP_POST, [this, statusFn](AsyncWebServerRequest *req) {
+    api.on("/api/usbs3", HTTP_POST, [this, statusFn](ApiRequest *req) {
         String v = req->hasParam("on") ? req->getParam("on")->value() : String();
         if (v != "0" && v != "1")
         {
@@ -239,7 +291,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
 
     // POST /api/identify?n=1..6 — flash the port's LED so it can be found.
     // Not under /api/port: routes match as prefixes, so /api/port would take it.
-    server.on("/api/identify", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    api.on("/api/identify", HTTP_POST, [this](ApiRequest *req) {
         int n = req->hasParam("n") ? req->getParam("n")->value().toInt() : 0;
         if (n < 1 || n > 6)
         {
@@ -256,7 +308,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     // for filling in older history. after=<count>: everything newer than that
     // capture count, for live updates. max=<n> sends at most n readings.
     // 400 for a bad port or parameter, 503 if there's no PSRAM history.
-    server.on("/api/history", HTTP_GET, [](AsyncWebServerRequest *req) {
+    api.on("/api/history", HTTP_GET, [](ApiRequest *req) {
         uint32_t port = 0;
         if (req->hasParam("port"))
         {
@@ -296,7 +348,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         size_t length = page->headBytes + (size_t)page->readings * PortHistory::SAMPLE_BYTES;
         // Sent a piece at a time: the header and events, then the readings,
         // copied out of PSRAM as they go, always whole readings at a time.
-        AsyncWebServerResponse *res = req->beginResponse(
+        ApiResponse *res = req->beginResponse(
             "application/octet-stream", length,
             [page, index](uint8_t *buf, size_t maxLen, size_t sent) -> size_t {
                 if (sent < page->headBytes)
@@ -319,26 +371,26 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     // GET /api/environment/history?since=<millis>&abs=1 — retained sidebar
     // temperature/humidity trend data. Relative time is the default for
     // browser reloads because client and hub clocks are different.
-    server.on("/api/environment/history", HTTP_GET, [envHistoryFn](AsyncWebServerRequest *req) {
+    api.on("/api/environment/history", HTTP_GET, [envHistoryFn](ApiRequest *req) {
         uint32_t since = req->hasParam("since")
                              ? (uint32_t)strtoul(req->getParam("since")->value().c_str(), nullptr, 10)
                              : 0;
         bool abs = req->hasParam("abs") && req->getParam("abs")->value().toInt() != 0;
-        AsyncResponseStream *res = req->beginResponseStream("application/json", 1024);
+        Print *res = req->beginResponseStream("application/json", 1024);
         envHistoryFn(*res, since, abs);
         req->send(res);
     });
 
     // All schedules. POST replaces them (JSON body) and replies with what was
     // stored, including which entries were found invalid.
-    server.on("/api/schedules", HTTP_GET, [schedGetFn](AsyncWebServerRequest *req) {
+    api.on("/api/schedules", HTTP_GET, [schedGetFn](ApiRequest *req) {
         req->send(200, "application/json", schedGetFn());
     });
-    server.on(
+    api.on(
         "/api/schedules", HTTP_POST,
-        [schedGetFn](AsyncWebServerRequest *req) { req->send(200, "application/json", schedGetFn()); },
+        [schedGetFn](ApiRequest *req) { req->send(200, "application/json", schedGetFn()); },
         nullptr,
-        [schedSetFn](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+        [schedSetFn](ApiRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
             String body;
             if (collectBody(req, data, len, index, total, body))
                 schedSetFn(body);
@@ -347,7 +399,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     // Settings form: GET the structure and current values of every visible
     // group; POST {"group":{...},...} to update those groups. Each group sent
     // is saved to its own file; groups not sent aren't touched.
-    server.on("/api/settings/schema", HTTP_GET, [](AsyncWebServerRequest *req) {
+    api.on("/api/settings/schema", HTTP_GET, [](ApiRequest *req) {
         SettingsLock lock;
         nlohmann::json groups = nlohmann::json::array();
         for (auto *m : HubRegistry::all())
@@ -357,11 +409,11 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         out["groups"] = groups;
         req->send(200, "application/json", String(out.dump().c_str()));
     });
-    server.on(
+    api.on(
         "/api/settings", HTTP_POST,
-        [](AsyncWebServerRequest *req) { req->send(200, "application/json", "{\"ok\":true}"); },
+        [](ApiRequest *req) { req->send(200, "application/json", "{\"ok\":true}"); },
         nullptr,
-        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+        [](ApiRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
             String body;
             if (!collectBody(req, data, len, index, total, body))
                 return;
@@ -388,12 +440,28 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         });
 
     // Start an IP-geolocation lookup. It runs from the main loop, not here.
-    server.on("/api/location/detect", HTTP_POST, [](AsyncWebServerRequest *req) {
+    api.on("/api/location/detect", HTTP_POST, [](ApiRequest *req) {
         g_location.requestGeoLookup();
         req->send(200, "application/json", "{\"ok\":true}");
     });
 
     registerRest();
+
+    server.on(
+        "/api", HTTP_GET | HTTP_POST,
+        [](AsyncWebServerRequest *req) {
+            HttpApiRequest apiReq(req);
+            api.handle(&apiReq, req->_tempObject ? String((const char *)req->_tempObject) : String());
+        },
+        nullptr,
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+            if (total > MAX_BODY_BYTES)
+                return;
+            if (index == 0)
+                req->_tempObject = calloc(total + 1, 1);
+            if (req->_tempObject)
+                memcpy((char *)req->_tempObject + index, data, len);
+        });
 
     server.onNotFound([](AsyncWebServerRequest *req) {
         if (req->method() == HTTP_OPTIONS)
@@ -403,6 +471,13 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         }
         req->send(404, "application/json", "{\"error\":\"not found\"}");
     });
+}
+
+void HubWebServer::listen()
+{
+    if (_listening)
+        return;
+    _listening = true;
     server.begin();
 }
 
@@ -410,7 +485,7 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
 // claims "/api/ports/3", and the first route registered wins. So the REST
 // routes are registered most-specific first, and each handler answers only
 // its exact path — anything longer (e.g. /api/ports/9) gets a 404.
-static bool exactPath(AsyncWebServerRequest *req, const String &path)
+static bool exactPath(ApiRequest *req, const String &path)
 {
     if (req->url() == path)
         return true;
@@ -434,7 +509,7 @@ void HubWebServer::registerRest()
         // (the default) is the newest 10 minutes, page 2 the 10 minutes before
         // that, and so on; the response says how many pages there are. 400 for
         // a bad page number, 503 if there's no PSRAM history.
-        server.on(history.c_str(), HTTP_GET, [n, history](AsyncWebServerRequest *req) {
+        api.on(history.c_str(), HTTP_GET, [n, history](ApiRequest *req) {
             if (!exactPath(req, history))
                 return;
             uint32_t pageNo = 1;
@@ -450,7 +525,7 @@ void HubWebServer::registerRest()
                 return;
             }
             // Streamed a piece at a time, so the page is never built in RAM.
-            AsyncWebServerResponse *res = req->beginChunkedResponse(
+            ApiResponse *res = req->beginChunkedResponse(
                 "application/json", [jp](uint8_t *buf, size_t maxLen, size_t) -> size_t {
                     size_t len = g_history.jsonChunk(*jp, buf, maxLen);
                     return (len || jp->done) ? len : RESPONSE_TRY_AGAIN;
@@ -458,19 +533,19 @@ void HubWebServer::registerRest()
             res->addHeader("Cache-Control", "no-store");
             req->send(res);
         });
-        server.on(sched.c_str(), HTTP_GET, [this, n, sched](AsyncWebServerRequest *req) {
+        api.on(sched.c_str(), HTTP_GET, [this, n, sched](ApiRequest *req) {
             SettingsLock lock;
             if (exactPath(req, sched))
                 req->send(200, "application/json", _rest.portSchedule(n));
         });
-        server.on(base.c_str(), HTTP_GET, [this, n, base](AsyncWebServerRequest *req) {
+        api.on(base.c_str(), HTTP_GET, [this, n, base](ApiRequest *req) {
             SettingsLock lock;
             if (exactPath(req, base))
                 req->send(200, "application/json", _rest.port(n));
         });
     }
 
-    server.on("/api/ports", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    api.on("/api/ports", HTTP_GET, [this](ApiRequest *req) {
         SettingsLock lock;
         if (exactPath(req, "/api/ports"))
             req->send(200, "application/json", _rest.ports());
@@ -478,7 +553,7 @@ void HubWebServer::registerRest()
 
     // POST /api/hub/ports?on=0|1 (also true/false, on/off) — every port at
     // once. Replies with the ports read back afterwards.
-    server.on("/api/hub/ports", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    api.on("/api/hub/ports", HTTP_POST, [this](ApiRequest *req) {
         if (!exactPath(req, "/api/hub/ports"))
             return;
         SettingsLock lock;
@@ -498,7 +573,7 @@ void HubWebServer::registerRest()
     // POST /api/hub/usbs3?on=0|1 (also true/false, on/off) — connect or
     // disconnect the ESP32-S3 from the hub. Replies with GET /api/hub
     // read back afterwards.
-    server.on("/api/hub/usbs3", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    api.on("/api/hub/usbs3", HTTP_POST, [this](ApiRequest *req) {
         if (!exactPath(req, "/api/hub/usbs3"))
             return;
         String v = req->hasParam("on") ? req->getParam("on")->value() : String();
@@ -516,14 +591,14 @@ void HubWebServer::registerRest()
     });
 
     // POST /api/hub/reboot — restart the hub, half a second after replying.
-    server.on("/api/hub/reboot", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    api.on("/api/hub/reboot", HTTP_POST, [this](ApiRequest *req) {
         if (!exactPath(req, "/api/hub/reboot"))
             return;
         _rest.reboot();
         req->send(200, "application/json", "{\"ok\":true}");
     });
 
-    server.on("/api/hub", HTTP_GET, [this](AsyncWebServerRequest *req) {
+    api.on("/api/hub", HTTP_GET, [this](ApiRequest *req) {
         SettingsLock lock;
         if (exactPath(req, "/api/hub"))
             req->send(200, "application/json", _rest.hub());
