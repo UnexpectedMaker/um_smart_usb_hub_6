@@ -55,6 +55,10 @@ dns-sd -L usb-hub _http._tcp local.      # show one hub's TXT records
 There's no authentication: like the web page, the API is open to anything on
 the same network. Keep the hub on a network you trust.
 
+Every response carries `Access-Control-Allow-Origin: *`, and `OPTIONS`
+preflights get `204`, so a page served from elsewhere (a local file server,
+for example) can call the API from a browser.
+
 ### Try it
 
 ```sh

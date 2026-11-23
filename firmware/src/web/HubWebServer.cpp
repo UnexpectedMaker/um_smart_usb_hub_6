@@ -169,6 +169,11 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
         return;
     _started = true;
 
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Private-Network", "true");
+
     // ---- Web UI, streamed straight out of flash ----
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
         req->send(200, "text/html", HUB_INDEX_HTML);
@@ -391,6 +396,11 @@ void HubWebServer::begin(StatusFn statusFn, ThemeFn themeFn, PortFn portFn,
     registerRest();
 
     server.onNotFound([](AsyncWebServerRequest *req) {
+        if (req->method() == HTTP_OPTIONS)
+        {
+            req->send(204);
+            return;
+        }
         req->send(404, "application/json", "{\"error\":\"not found\"}");
     });
     server.begin();
