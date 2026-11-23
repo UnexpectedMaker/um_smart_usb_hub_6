@@ -55,6 +55,42 @@ dns-sd -L usb-hub _http._tcp local.      # show one hub's TXT records
 There's no authentication: like the web page, the API is open to anything on
 the same network. Keep the hub on a network you trust.
 
+Every response carries `Access-Control-Allow-Origin: *`, and `OPTIONS`
+preflights get `204`, so a page served from elsewhere (a local file server,
+for example) can call the API from a browser.
+
+### Over USB serial
+
+The same API, without WiFi, over the hub's USB serial port (115200 baud, any
+setting works). Send one JSON object per line:
+
+```json
+{"id":1,"method":"POST","path":"/api/port","query":{"n":3,"on":1}}
+{"id":2,"method":"POST","path":"/api/settings","body":{"leds":{"brightness":80}}}
+```
+
+`method` defaults to `GET`. `query` holds the query parameters; `body` is the
+request body, as a JSON value or a string. A request line is at most 8192
+bytes and isn't echoed.
+
+The reply is one or more lines, each starting with the record separator
+character `0x1E`:
+
+```
+<0x1E>D <id> <seq> <base64>
+<0x1E>E <id> <status> <frames> <content-type>
+```
+
+`D` lines carry the body, base64-encoded, in order from `seq` 0. The `E` line
+ends the reply with the HTTP status code, the number of `D` lines sent and the
+content type. A reply with fewer `D` lines than `frames` was cut short. Log
+lines carry on between and around reply lines; ignore anything before `0x1E`
+and any line without it.
+
+Every `/api` route works this way, including the binary `/api/history`.
+`POST /api/hub/usbs3?on=0` and `POST /api/hub/reboot` drop the USB
+connection.
+
 ### Try it
 
 ```sh

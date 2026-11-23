@@ -44,6 +44,7 @@
 #include "UM_INA3221.h"
 #include "ports/USBPort.h"
 #include "web/HubWebServer.h"
+#include "api/SerialApi.h"
 #include "esphome/EspHomeApi.h"
 #include "settings/HubSettings.h"
 #include "history/EnvHistory.h"
@@ -1301,11 +1302,8 @@ void connectWiFi()
     WiFi.begin(w.ssid.c_str(), w.password.c_str());
 }
 
-// Got an IP: start the web server and OTA (each only once), and tell the
-// settings groups the network is up (location starts NTP).
-void startNetServices()
+void setupApi()
 {
-    Serial.printf("[wifi] connected — IP %s\r\n", WiFi.localIP().toString().c_str());
     webServer.setRest({apiHubJson, apiPortsJson, apiPortJson, apiPortScheduleJson,
                        [](bool on)
                        {
@@ -1339,6 +1337,14 @@ void startNetServices()
             if (g_schedules.setFromJson(body))
                 g_schedules.save();
         });
+}
+
+// Got an IP: start the web server and OTA (each only once), and tell the
+// settings groups the network is up (location starts NTP).
+void startNetServices()
+{
+    Serial.printf("[wifi] connected — IP %s\r\n", WiFi.localIP().toString().c_str());
+    webServer.listen();
     Serial.printf("[web] http://%s/\r\n", WiFi.localIP().toString().c_str());
     startOTA();
     g_espHomeApi.begin({[]()
@@ -1626,9 +1632,28 @@ void handleSerialCommand(String cmd)
 void processSerial()
 {
     static String line;
+    static bool apiRequest = false;
     while (Serial.available())
     {
         char c = Serial.read();
+        if (apiRequest)
+        {
+            if (c == '\n' || c == '\r')
+            {
+                serialApi.queue(line);
+                line = "";
+                apiRequest = false;
+            }
+            else if (line.length() < SerialApi::MAX_REQUEST)
+                line += c;
+            continue;
+        }
+        if (c == '{' && !line.length())
+        {
+            apiRequest = true;
+            line += c;
+            continue;
+        }
         if (c == '\n' || c == '\r')
         {
             Serial.println();
@@ -1677,6 +1702,7 @@ void setup()
     // a burst of output waits in the buffer while a serial monitor reads it,
     // instead of being dropped by the zero timeout below.
     Serial.setTxBufferSize(4096);
+    Serial.setRxBufferSize(SerialApi::MAX_REQUEST);
     Serial.begin(115200);
     // Don't wait on serial when nothing's reading it. A blocked print while
     // loop() holds SettingsLock stalls the web server long enough to trip
@@ -1773,6 +1799,7 @@ void setup()
             g_wifiLost = true;
         },
         ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    setupApi();
     g_wifi.consumeChanged(); // loading settings isn't a change to react to
     connectWiFi();
     Serial.println("[boot] setup done");
@@ -1934,6 +1961,7 @@ void loop()
         SettingsLock lock;
         processSerial();
     }
+    serialApi.service();
     ArduinoOTA.handle();
 
     // ---- network ----
